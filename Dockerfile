@@ -1,4 +1,4 @@
-# Peregrine (bird trip planner) - runs the same server.py, listening on the network.
+# Peregrine - runs the same server.py, listening on the network.
 FROM python:3.12-slim
 
 WORKDIR /app
