@@ -51,7 +51,7 @@ MOCK = env("MOCK") == "1"  # test-only sample data
 
 # Running on a server (e.g. in Docker) - all optional; defaults are "this computer only".
 HOST = env("HOST", "127.0.0.1")            # 0.0.0.0 = listen on the network
-PASSWORD = env("PASSWORD")             # required when listening on the network
+PASSWORD = env("PASSWORD")             # optional: ask for a password (any username)
 ALLOWED_HOSTS = [h.strip().lower() for h in
                  env("ALLOWED_HOSTS").split(",") if h.strip()]
 LOCAL_ONLY = HOST in ("127.0.0.1", "localhost", "::1")
@@ -566,7 +566,10 @@ class Handler(SimpleHTTPRequestHandler):
                 return False
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
         ok_hosts = ["localhost", "127.0.0.1", "::1"] + ALLOWED_HOSTS
-        if "*" not in ALLOWED_HOSTS and host not in ok_hosts:
+        # On your own PC only this computer is trusted. On a server, any address is fine
+        # unless you list specific ones in PEREGRINE_ALLOWED_HOSTS.
+        any_host = "*" in ALLOWED_HOSTS or (not LOCAL_ONLY and not ALLOWED_HOSTS)
+        if not any_host and host not in ok_hosts:
             self.error_json(403, "This address isn't allowed. Add it to PEREGRINE_ALLOWED_HOSTS.")
             return False
         # A custom header can't be sent cross-site without a CORS preflight,
@@ -718,10 +721,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
-    if not LOCAL_ONLY and not PASSWORD:
-        print("Refusing to start: PEREGRINE_HOST=%s makes the planner reachable from the network,\n"
-              "so set PEREGRINE_PASSWORD too (it protects your eBird key, trips and life list)." % HOST)
-        sys.exit(2)
     port = int(env("PORT", "8765"))
     server = None
     for p in range(port, port + (10 if LOCAL_ONLY else 1)):
@@ -737,8 +736,10 @@ def main():
     url = "http://localhost:%d/" % port
     print("Peregrine is running at %s" % url)
     if not LOCAL_ONLY:
-        print("  Listening on %s:%d (password protected). Allowed host names: %s"
-              % (HOST, port, ", ".join(ALLOWED_HOSTS) or "localhost only - set PEREGRINE_ALLOWED_HOSTS"))
+        print("  Listening on %s:%d - %s, %s." % (
+            HOST, port,
+            "password protected" if PASSWORD else "no password",
+            ("answering only " + ", ".join(ALLOWED_HOSTS)) if ALLOWED_HOSTS and "*" not in ALLOWED_HOSTS else "any address"))
     if MOCK:
         print("  (SAMPLE DATA MODE - not real eBird data)")
     if LOCAL_ONLY:

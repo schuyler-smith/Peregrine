@@ -64,15 +64,33 @@ This is a personal, non-commercial tool. Your key stays on your computer, the ma
 
 ## Run it on a server (Docker)
 
-The same app runs in a Docker container, so you can reach it from any device. You need a server with Docker and Docker Compose.
+The same app runs in a Docker container, so you can reach it from any device. On the server you only need a `docker-compose.yml`. Either copy this repo's file, or use this:
 
-1. **Copy this whole folder to the server.**
-2. **Create your settings file:** copy `.env.example` to `.env` and edit it:
-   - `PEREGRINE_PASSWORD`: a long password. This is required; the planner refuses to start on a network without one.
-   - `PEREGRINE_ALLOWED_HOSTS`: the name or IP you'll type in the browser, e.g. `birds.example.com,192.168.1.50`. Other addresses are refused.
-   - `EBIRD_API_KEY` (optional): or paste the key in Settings later.
-3. **Start it** with the ready-made image that GitHub builds (see below): `docker compose pull && docker compose up -d`. Or build it on the server yourself: `docker compose up -d --build`.
-4. **Open** `http://<server>:8765`. Your browser asks for the password (any username works). Then import your life list in Settings as usual.
+```yaml
+name: peregrine
+services:
+  peregrine:
+    image: ghcr.io/schuyler-smith/peregrine:latest
+    container_name: peregrine
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    volumes:
+      - peregrine-data:/app/data     # trips, life list, eBird key
+      - peregrine-cache:/app/cache   # saved eBird answers
+volumes:
+  peregrine-data:
+  peregrine-cache:
+```
+
+Start it with `docker compose up -d` and open `http://<server>:8765`. Paste your eBird key and import your life list in Settings as usual.
+
+**Optional settings** (add them under `environment:`, or put them in a `.env` file using this repo's `docker-compose.yml`; see `.env.example`):
+- `EBIRD_API_KEY`: your key, instead of pasting it in Settings.
+- `PEREGRINE_PASSWORD`: makes the browser ask for a password (any username).
+- `PEREGRINE_ALLOWED_HOSTS`: only answer to these addresses, e.g. `birds.example.com,192.168.1.50`.
+
+By default there's no password and any address works. Anyone who can reach the server can then use Peregrine, including your eBird key. That's fine on a home network or a VPN like Tailscale. If it faces the internet, set a password and put HTTPS in front of it (Caddy, nginx, Traefik).
 
 **Ready-made image:** every push to `main` builds the container (for both regular PCs/servers and ARM boards like a Raspberry Pi) and publishes it as `ghcr.io/schuyler-smith/peregrine:latest`. Pushing a tag like `v1.0.0` also publishes `:1.0.0`. To update a server: `docker compose pull && docker compose up -d`. If the package is private, either make it public on GitHub (your profile → Packages → peregrine → Package settings) or run `docker login ghcr.io` on the server first.
 
@@ -88,11 +106,7 @@ docker compose exec -u root peregrine chown -R birder /app/data
 docker compose restart
 ```
 
-**Keep it private.**
-- The password protects your eBird key, trips and life list. Over plain `http://` it can be read by anyone on the same network.
-- On a home network or a VPN (e.g. Tailscale) that's usually fine.
-- If it faces the internet, put HTTPS in front of it with a reverse proxy (Caddy, nginx, Traefik) and add that host name to `PEREGRINE_ALLOWED_HOSTS`.
-- eBird's terms are for personal use, so don't share the link widely.
+eBird's terms are for personal use, so don't share the link widely.
 
 ## Where your things are kept
 

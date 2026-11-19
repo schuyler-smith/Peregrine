@@ -69,11 +69,11 @@ jobs:
         if: github.event_name != 'pull_request'
         run: |
           IMAGE="ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/peregrine:sha-${GITHUB_SHA::7}"
-          docker run -d --name smoke -p 8765:8765 -e PEREGRINE_PASSWORD=ci-test "$IMAGE"
+          docker run -d --name smoke -p 8765:8765 "$IMAGE"
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -u x:ci-test http://localhost:8765/ || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/ || true)
             [ "$code" = "200" ] && break; sleep 1
           done
           docker logs smoke
           test "$code" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8765/)" = "401"
+          curl -sf http://localhost:8765/api/settings
