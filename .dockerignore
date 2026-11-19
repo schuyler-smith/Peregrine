@@ -1,0 +1,7 @@
+data
+cache
+__pycache__
+.env
+*.md
+start.bat
+start.command

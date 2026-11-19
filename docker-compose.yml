@@ -1,0 +1,26 @@
+# Start with the published image:  docker compose pull && docker compose up -d
+# ...or build it here instead:     docker compose up -d --build
+# (then open http://<server>:8765)
+# Settings come from a .env file next to this one - copy .env.example to .env first.
+# Fixed project name, so the saved-data volumes stay the same even if this folder is renamed.
+name: peregrine
+
+services:
+  peregrine:
+    image: ghcr.io/schuyler-smith/peregrine:latest
+    build: .
+    container_name: peregrine
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      PEREGRINE_PASSWORD: ${PEREGRINE_PASSWORD:?Set PEREGRINE_PASSWORD in .env}
+      PEREGRINE_ALLOWED_HOSTS: ${PEREGRINE_ALLOWED_HOSTS:-localhost}
+      EBIRD_API_KEY: ${EBIRD_API_KEY:-}
+    volumes:
+      - peregrine-data:/app/data
+      - peregrine-cache:/app/cache
+
+volumes:
+  peregrine-data:
+  peregrine-cache:

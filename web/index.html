@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peregrine · bird trip planner</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233d5a3a'/%3E%3Cpath d='M5 20c4 0 7-2 9-6 2-4 5-7 10-7 2 0 3 1 4 3l-3 1c0 6-5 11-12 11-3 0-6-1-8-2z' fill='%23e9dcb4'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M4 20c4 0 7-2 9-6 2-4 5-7 10-7 2 0 4 1 5 3l-3 1c0 6-5 12-13 12-3 0-6-1-8-3z" fill="currentColor"/><circle cx="23.5" cy="10" r="1.2" fill="#f6f3ea"/></svg>
+    <span>Peregrine</span>
+  </div>
+  <input id="tripName" class="trip-name" placeholder="Untitled trip" aria-label="Trip name">
+  <span id="dirty" class="dirty"></span>
+  <div class="top-actions">
+    <button id="btnNew" class="ghost">New</button>
+    <button id="btnTrips" class="ghost">My trips</button>
+    <button id="btnSave" class="primary">Save</button>
+    <button id="btnSettings" class="ghost" title="Settings">⚙ Settings</button>
+  </div>
+</header>
+<div id="mockBanner" class="mock-banner" hidden>Sample-data mode: the birds shown are made up for testing, not real eBird data.</div>
+
+<main class="layout">
+  <div id="map"></div>
+
+  <aside class="panel">
+    <nav class="tabs" role="tablist">
+      <button data-tab="trip" class="active">Itinerary</button>
+      <button data-tab="stop">Stop</button>
+      <button data-tab="whole">Trip</button>
+    </nav>
+
+    <section id="tab-trip" class="tab-body">
+      <div class="field-row">
+        <label>Start date<input type="date" id="tripDate"></label>
+        <label>Look at days within
+          <select id="tripWindow">
+            <option value="3">± 3 days</option>
+            <option value="5">± 5 days</option>
+            <option value="7" selected>± 7 days</option>
+            <option value="10">± 10 days</option>
+            <option value="15">± 15 days</option>
+          </select>
+        </label>
+      </div>
+      <p id="dateNeed" class="nudge" style="margin:8px 0 0">Start with the date: birds are looked up for that time of year.</p>
+      <p class="fine" style="margin-bottom:0">Each stop is the day after the one before. Change a stop's date and the stops after it follow on.</p>
+      <p class="fine">Likely birds come from eBird checklists around this calendar date: 5 sample days across your window in each of the last 4 years (about 20 requests per stop, saved for next time).</p>
+
+      <form id="searchForm" class="search">
+        <input id="searchInput" placeholder="Search a place to add a stop…" autocomplete="off">
+        <button type="submit" class="ghost">Search</button>
+      </form>
+      <ul id="searchResults" class="search-results"></ul>
+      <p class="hint">…or double-click anywhere on the map to add a stop there. Drag a pin to move it.</p>
+      <button id="btnImportRoute" class="import-btn" type="button">
+        <span class="import-ico">↥</span>
+        <span><b>Import a route</b><small>Google Maps link · list of places · GPX/KML file</small></span>
+      </button>
+
+      <h3 class="section-h">Stops</h3>
+      <p class="fine" style="margin-top:0">Nothing is looked up on eBird until you click <b>Find birds</b>, so set your dates and window first.</p>
+      <div id="findAll" class="find-all" hidden></div>
+      <ol id="stops" class="stops"></ol>
+
+      <div class="trip-foot">
+        <button id="btnExport" class="ghost small">Export trip file</button>
+        <button id="btnImport" class="ghost small">Import trip file</button>
+        <input id="importFile" type="file" accept=".json,application/json" hidden>
+      </div>
+      <p id="lifeStatus" class="life-status"></p>
+    </section>
+
+    <div id="filters" class="filters" hidden>
+      <label class="toggle"><input type="checkbox" id="fLifers"> Lifers only</label>
+      <label class="toggle starred-toggle"><input type="checkbox" id="fStarred"> ★ Starred only</label>
+      <select id="fMin" title="Hide birds below this likelihood">
+        <option value="0">Any chance</option>
+        <option value="0.05">5%+</option>
+        <option value="0.15">15%+</option>
+        <option value="0.5">50%+</option>
+      </select>
+      <select id="fSort" title="Sort">
+        <option value="p">Most likely first</option>
+        <option value="az">A–Z</option>
+      </select>
+      <input id="fSearch" type="search" placeholder="Find a bird">
+    </div>
+
+    <section id="tab-stop" class="tab-body" hidden></section>
+    <section id="tab-whole" class="tab-body" hidden></section>
+  </aside>
+</main>
+
+<dialog id="tripsDlg" class="dlg">
+  <h2>My trips</h2>
+  <ul id="tripsList" class="trips-list"></ul>
+  <div class="dlg-actions"><button class="ghost" data-close>Close</button></div>
+</dialog>
+
+<dialog id="settingsDlg" class="dlg">
+  <h2>Settings</h2>
+  <p id="welcome" class="welcome" hidden>Welcome! Two quick things and you're ready: your free eBird API key, then (optionally) your life list.</p>
+
+  <h3>1 · eBird API key</h3>
+  <p class="fine">Get a free key at <a href="https://ebird.org/api/keygen" target="_blank" rel="noopener">ebird.org/api/keygen</a> (sign in, accept the terms, copy the key). It's stored only on this computer.</p>
+  <form id="keyForm" class="inline-form">
+    <input id="keyInput" type="password" placeholder="Paste your eBird API key" autocomplete="off">
+    <button class="primary" type="submit">Save key</button>
+  </form>
+  <p id="keyMsg" class="msg"></p>
+
+  <h3>2 · Your life list</h3>
+  <p class="fine">On eBird, open <a href="https://ebird.org/lifelist" target="_blank" rel="noopener">ebird.org/lifelist</a>, choose <b>Download (CSV)</b>, then pick that file here. (The full “Download My Data” CSV works too.) Re-import any time to update it.</p>
+  <div class="inline-form">
+    <input id="lifeFile" type="file" accept=".csv,text/csv">
+    <button id="btnClearLife" class="ghost small" type="button">Clear</button>
+  </div>
+  <p id="lifeMsg" class="msg"></p>
+
+  <div class="dlg-actions"><button class="primary" data-close>Done</button></div>
+</dialog>
+
+<dialog id="importDlg" class="dlg">
+  <h2>Import a route</h2>
+  <p class="fine">Paste <b>a Google Maps directions link</b>: in Google Maps, add all your stops, then click <b>Share → Copy link</b>. Or paste <b>a list of places</b>, one per line, like <i>Montezuma NWR</i> or <i>42.44, -76.50</i>.</p>
+  <textarea id="importText" rows="6" placeholder="https://maps.app.goo.gl/…&#10;— or —&#10;Ithaca, NY&#10;Montezuma National Wildlife Refuge&#10;Syracuse, NY"></textarea>
+  <p class="fine" style="margin:4px 0 2px">Tour itinerary? Paste lines like <i>Day 3: Kruger National Park</i>. Each stop gets that day's date, and phrases like "Drive to…" are stripped out.</p>
+  <div class="field-row import-opts">
+    <label>Add to each place search <input id="importSuffix" placeholder="e.g. South Africa"></label>
+    <label>Day 1 is <input type="date" id="importDay1"></label>
+  </div>
+  <p class="fine" style="margin-bottom:4px">…or choose <b>a GPX, KML or KMZ file</b> (for example from Google My Maps, Gaia GPS or AllTrails):</p>
+  <input id="importRouteFile" type="file" accept=".gpx,.kml,.kmz">
+  <label class="check"><input type="checkbox" id="importReplace"> Replace the stops already in this trip</label>
+  <p id="importMsg" class="msg"></p>
+  <div class="dlg-actions" style="gap:6px"><button class="ghost" data-close type="button">Cancel</button><button class="primary" id="btnDoImport" type="button">Add stops</button></div>
+</dialog>
+
+<dialog id="dateDlg" class="dlg">
+  <h2>When does the trip start?</h2>
+  <p class="fine">Stop 1 is on this date and each stop after it is the next day. You can change any stop's date in the Itinerary tab, and the stops after it follow on.</p>
+  <form id="dateForm" class="field-row">
+    <label>Start date<input type="date" id="dlgDate" required></label>
+    <label>Look at days within
+      <select id="dlgWindow">
+        <option value="3">± 3 days</option>
+        <option value="5">± 5 days</option>
+        <option value="7">± 7 days</option>
+        <option value="10">± 10 days</option>
+        <option value="15">± 15 days</option>
+      </select>
+    </label>
+  </form>
+  <p class="fine">Every window costs the same (about 20 eBird requests per stop). A wider window smooths out odd days; a narrower one is sharper for migration timing.</p>
+  <div class="dlg-actions" style="gap:6px"><button class="ghost" data-close type="button">Not yet</button><button class="primary" form="dateForm" type="submit">Find birds</button></div>
+</dialog>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="vendor/leaflet.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

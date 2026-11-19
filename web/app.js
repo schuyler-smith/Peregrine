@@ -1,0 +1,1437 @@
+/* Peregrine (bird trip planner) — front end.
+   Talks only to the local server (server.py), which proxies eBird and place search. */
+"use strict";
+
+// ------------------------------------------------------------------ helpers
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const uid = () => Math.random().toString(36).slice(2, 10);
+const pct = (p) => (p >= 0.995 ? "100%" : p > 0 && p < 0.01 ? "<1%" : Math.round(p * 100) + "%");
+const binom = (sci) => String(sci || "").trim().split(/\s+/).slice(0, 2).join(" ").toLowerCase();
+const normCom = (c) => String(c || "").replace(/\s*\(.*?\)\s*$/, "").trim().toLowerCase();
+
+function todayISO() {
+  const d = new Date();
+  return iso(d);
+}
+function iso(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function parseISO(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+}
+function niceDate(s, withYear = false) {
+  const d = parseISO(s);
+  if (!d) return "";
+  return d.toLocaleDateString(undefined, withYear ? { month: "short", day: "numeric", year: "numeric" } : { month: "short", day: "numeric" });
+}
+function addDays(d, n) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() + n);
+  return x;
+}
+
+async function api(url, opts = {}) {
+  let r;
+  try {
+    const method = (opts.method || "GET").toUpperCase();
+    const headers = Object.assign({}, opts.headers, method === "GET" ? {} : { "X-Peregrine": "1" });
+    r = await fetch(url, Object.assign({}, opts, { headers }));
+  } catch (e) {
+    throw new Error("Can't reach the planner's local server. Is its window still open?");
+  }
+  let body = null;
+  try { body = await r.json(); } catch (e) { /* not JSON */ }
+  if (!r.ok) {
+    const err = new Error((body && body.error) || `Request failed (${r.status})`);
+    err.status = r.status;
+    throw err;
+  }
+  return body;
+}
+
+// Limit how many eBird requests run at once (the server limits too).
+const limiter = (() => {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= 3 || !queue.length) return;
+    active++;
+    const { fn, resolve, reject } = queue.shift();
+    fn().then(resolve, reject).finally(() => { active--; next(); });
+  };
+  return (fn) => new Promise((resolve, reject) => { queue.push({ fn, resolve, reject }); next(); });
+})();
+
+let toastTimer;
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), 2600);
+}
+
+// ------------------------------------------------------------------ state
+const hsState = new Map(); // stopId -> {key, status, done, total, candidates, error}
+const hsLists = new Map(); // locId -> Set of species codes
+let hsVersion = 0;
+const LS_KEY = "peregrine.current";
+try { // carry over the trip you had open under the old name
+  if (!localStorage.getItem(LS_KEY) && localStorage.getItem("birdtrip.current")) {
+    localStorage.setItem(LS_KEY, localStorage.getItem("birdtrip.current"));
+    localStorage.removeItem("birdtrip.current");
+  }
+} catch (e) { /* storage unavailable */ }
+const state = {
+  trip: blankTrip(),
+  results: new Map(),   // stopId -> {sig, status, done, total, data, error}
+  selected: null,
+  tab: "trip",
+  filters: { lifers: false, starred: false, min: 0, sort: "p", q: "" },
+  life: { loaded: false, sci: new Set(), com: new Set(), count: 0, filename: "", importedAt: "" },
+  dirty: false,
+  mock: false,
+};
+
+function blankTrip() {
+  return { id: null, v: 2, name: "", date: "", window: 7, stops: [], stars: [] };
+}
+/* Dates: stop 1 is on the trip's start date; every later stop is the day after the
+   stop before it, unless it has its own date, which then restarts the chain. */
+function effectiveDates() {
+  const out = new Map();
+  let prev = "";
+  state.trip.stops.forEach((s, i) => {
+    const d = s.date || (i === 0 ? state.trip.date : prev ? iso(addDays(parseISO(prev), 1)) : "");
+    out.set(s.id, d);
+    prev = d;
+  });
+  return out;
+}
+function stopDate(stop) { return effectiveDates().get(stop.id) || stop.date || ""; }
+function dayNumber(stop) {
+  const first = state.trip.date || stopDate(state.trip.stops[0] || {});
+  const d = stopDate(stop);
+  if (!first || !d) return null;
+  return Math.round((parseISO(d) - parseISO(first)) / 86400000) + 1;
+}
+function tripDateRange() {
+  const ds = state.trip.stops.map(stopDate).filter(Boolean).sort();
+  if (!ds.length) return state.trip.date ? niceDate(state.trip.date, true) : "";
+  return ds[0] === ds[ds.length - 1] ? niceDate(ds[0], true) : `${niceDate(ds[0])} – ${niceDate(ds[ds.length - 1], true)}`;
+}
+function stopSig(stop) { return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${stopDate(stop)}|${state.trip.window}`; }
+function stopIndex(id) { return state.trip.stops.findIndex((s) => s.id === id); }
+function stopById(id) { return state.trip.stops.find((s) => s.id === id); }
+
+function markDirty() {
+  state.dirty = true;
+  $("#dirty").textContent = "• unsaved changes";
+  persistLocal();
+}
+function markClean() {
+  state.dirty = false;
+  $("#dirty").textContent = "";
+  persistLocal();
+}
+function persistLocal() {
+  try { localStorage.setItem(LS_KEY, JSON.stringify({ trip: state.trip, dirty: state.dirty })); } catch (e) { /* storage unavailable */ }
+}
+
+// ------------------------------------------------------------------ likelihood
+/* To stay light on eBird, each stop samples DAYS_PER_YEAR days spread evenly
+   across the window (date ± N) in each of the YEARS most recent years whose window
+   has fully passed: 5 × 4 = 20 requests, cached for good once fetched. */
+const DAYS_PER_YEAR = 5, YEARS = 4;
+function sampleOffsets(n) {
+  const out = new Set();
+  for (let i = 0; i < DAYS_PER_YEAR; i++) out.add(Math.round(-n + (i * 2 * n) / (DAYS_PER_YEAR - 1)));
+  return Array.from(out);
+}
+function sampleDays(dateStr, n) {
+  const base = parseISO(dateStr);
+  const today = parseISO(todayISO());
+  const years = [];
+  for (let y = today.getFullYear(); years.length < YEARS && y > today.getFullYear() - 12; y--) {
+    const center = new Date(y, base.getMonth(), base.getDate());
+    if (addDays(center, n) < today) years.push(y);
+  }
+  const offsets = sampleOffsets(n);
+  const days = [];
+  for (const y of years) {
+    const center = new Date(y, base.getMonth(), base.getDate());
+    for (const k of offsets) days.push(addDays(center, k));
+  }
+  return { days, years, perYear: offsets.length };
+}
+
+/* Stops load one at a time, so a whole trip never hits eBird in one burst. */
+let stopChain = Promise.resolve();
+function inLine(fn) {
+  const run = stopChain.then(fn, fn);
+  stopChain = run.catch(() => {});
+  return run;
+}
+
+function haversineKm(a, b) {
+  const R = 6371, rad = Math.PI / 180;
+  const dLat = (b.lat - a.lat) * rad, dLng = (b.lng - a.lng) * rad;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * rad) * Math.cos(b.lat * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+async function findRegion(stop) {
+  for (const dist of [25, 75, 200]) {
+    const hs = await limiter(() => api(`/api/ebird/ref/hotspot/geo?lat=${stop.lat.toFixed(4)}&lng=${stop.lng.toFixed(4)}&dist=${dist}&fmt=json`));
+    if (Array.isArray(hs) && hs.length) {
+      hs.sort((a, b) => haversineKm(stop, a) - haversineKm(stop, b));
+      const h = hs[0];
+      const code = h.subnational2Code || h.subnational1Code || h.countryCode;
+      let name = code;
+      try {
+        const info = await limiter(() => api(`/api/ebird/ref/region/info/${encodeURIComponent(code)}`));
+        if (info && info.result) name = info.result;
+      } catch (e) { /* keep code */ }
+      return { code, name };
+    }
+  }
+  throw new Error("No eBird hotspots within 200 km of this stop, so there's no data to go on.");
+}
+
+function loadStop(stop) {
+  if (!stopDate(stop)) {
+    // No date yet: ask for it, then carry on with this search.
+    pendingFind.add(stop.id);
+    askDate(true);
+    return;
+  }
+  const sig = stopSig(stop);
+  const prev = state.results.get(stop.id);
+  if (prev && prev.sig === sig && prev.status !== "error") return;
+  const res = { sig, status: "loading", done: 0, total: 0, data: null, error: null, note: "Waiting for the stop before it…" };
+  state.results.set(stop.id, res);
+  render();
+  const stale = () => state.results.get(stop.id) !== res;
+
+  inLine(async () => {
+    if (stale()) return;
+    res.note = "";
+    render();
+    try {
+      if (!stop.region || stop.regionFor !== `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}`) {
+        stop.region = await findRegion(stop);
+        stop.regionFor = `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}`;
+        persistLocal();
+      }
+      if (stale()) return;
+      const date = stopDate(stop);
+      const n = state.trip.window;
+      const { days, years, perYear } = sampleDays(date, n);
+      res.total = days.length;
+      const counts = new Map();
+      let withData = 0, authError = null, loaded = 0;
+      let failedDays = [];
+
+      const fetchDay = (d) => limiter(async () => {
+        if (stale() || authError) return;
+        try {
+          const obs = await api(`/api/ebird/data/obs/${encodeURIComponent(stop.region.code)}/historic/${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}?cat=species&detail=simple`);
+          if (Array.isArray(obs) && obs.length) {
+            withData++;
+            const seenToday = new Set();
+            for (const o of obs) {
+              if (!o.speciesCode || seenToday.has(o.speciesCode)) continue;
+              seenToday.add(o.speciesCode);
+              const c = counts.get(o.speciesCode) || { code: o.speciesCode, com: o.comName, sci: o.sciName, n: 0 };
+              c.n++;
+              counts.set(o.speciesCode, c);
+            }
+          }
+          loaded++;
+        } catch (e) {
+          if (e.status === 401 || e.status === 400) authError = e;
+          failedDays.push(d);
+        } finally {
+          res.done = Math.min(res.total, loaded + failedDays.length);
+          render();
+        }
+      });
+
+      await Promise.all(days.map(fetchDay));
+      // eBird slows down keys that ask a lot; wait, then retry just the missing days.
+      for (const pause of [8, 30]) {
+        if (stale() || authError || !failedDays.length) break;
+        const retry = failedDays;
+        failedDays = [];
+        res.note = `eBird is busy. Retrying ${retry.length} days in ${pause}s…`;
+        res.done = loaded;
+        render();
+        await new Promise((ok) => setTimeout(ok, pause * 1000));
+        res.note = "";
+        if (stale()) return;
+        await Promise.all(retry.map(fetchDay));
+      }
+      res.note = "";
+      if (stale()) return;
+      if (authError) throw authError;
+      if (loaded < days.length * 0.5) {
+        throw new Error(`eBird is limiting requests right now (it slows down a key that asks a lot). Loaded ${loaded} of ${days.length} days. Those are kept, so wait a few minutes and click Try again.`);
+      }
+
+      const species = [];
+      for (const c of counts.values()) species.push({ ...c, p: withData ? c.n / withData : 0, recent: false });
+
+      // If the visit is within 30 days of today, add what's been seen nearby lately.
+      const diff = Math.round((parseISO(date) - parseISO(todayISO())) / 86400000);
+      let recentUsed = false;
+      if (diff >= -30 && diff <= 30) {
+        try {
+          const rec = await limiter(() => api(`/api/ebird/data/obs/geo/recent?lat=${stop.lat.toFixed(4)}&lng=${stop.lng.toFixed(4)}&dist=25&back=30&cat=species`));
+          recentUsed = true;
+          const byCode = new Map(species.map((s) => [s.code, s]));
+          for (const o of rec || []) {
+            const s = byCode.get(o.speciesCode);
+            if (s) s.recent = true;
+            else {
+              const ns = { code: o.speciesCode, com: o.comName, sci: o.sciName, n: 0, p: 0, recent: true };
+              species.push(ns);
+              byCode.set(ns.code, ns);
+            }
+          }
+        } catch (e) { /* recent sightings are a bonus */ }
+      }
+      if (stale()) return;
+      res.data = { species, withData, totalDays: days.length, missing: failedDays.length, years, perYear, window: n, date, recentUsed, region: stop.region };
+      res.status = "done";
+      stop.result = { sig: res.sig, data: res.data }; // saved with the trip, so reopening needs no new requests
+      markDirty();
+    } catch (e) {
+      if (stale()) return;
+      res.status = "error";
+      res.error = e.message || String(e);
+    }
+    render();
+  });
+}
+
+/* eBird is only asked when you click "Find birds": nothing searches on its own. */
+const pendingFind = new Set();
+function needsSearch(stop) {
+  const r = state.results.get(stop.id);
+  if (r && r.status === "loading") return false;
+  return !r || r.status !== "done" || r.sig !== stopSig(stop);
+}
+function findBirds(stops) {
+  const todo = stops.filter(needsSearch);
+  if (todo.some((s) => !stopDate(s))) {
+    todo.forEach((s) => pendingFind.add(s.id));
+    askDate(true);
+    return;
+  }
+  todo.forEach((s) => { state.results.delete(s.id); loadStop(s); });
+}
+
+// ------------------------------------------------------------------ life list
+function setLifeList(obj) {
+  const sp = (obj && obj.species) || [];
+  state.life = {
+    loaded: sp.length > 0,
+    sci: new Set(sp.map((s) => binom(s.sci)).filter(Boolean)),
+    com: new Set(sp.map((s) => normCom(s.com)).filter(Boolean)),
+    count: sp.length,
+    filename: (obj && obj.filename) || "",
+    importedAt: (obj && obj.importedAt) || "",
+  };
+}
+function isStarred(sp) { return (state.trip.stars || []).includes(sp.code); }
+function toggleStar(code) {
+  const st = new Set(state.trip.stars || []);
+  if (st.has(code)) st.delete(code); else st.add(code);
+  state.trip.stars = Array.from(st);
+  hsVersion++;
+  markDirty();
+  render();
+}
+function isLifer(sp) {
+  if (!state.life.loaded) return false;
+  return !(state.life.sci.has(binom(sp.sci)) || state.life.com.has(normCom(sp.com)));
+}
+
+// ------------------------------------------------------------------ map
+const map = L.map("map", { zoomControl: true, worldCopyJump: true, doubleClickZoom: false }).setView([39.5, -98.35], 4);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · bird data <a href="https://ebird.org">eBird</a>',
+}).addTo(map);
+const routeLine = L.polyline([], { color: "#3d5a3a", weight: 3, opacity: 0.6, dashArray: "6 6" }).addTo(map);
+const markers = new Map(); // stopId -> marker
+let dragging = false;
+
+map.on("dblclick", (e) => {
+  const div = document.createElement("div");
+  div.className = "add-pop";
+  div.innerHTML = `<div>${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}</div><button class="primary small">＋ Add stop here</button>`;
+  const pop = L.popup({ closeButton: false }).setLatLng(e.latlng).setContent(div).openOn(map);
+  div.querySelector("button").addEventListener("click", () => {
+    map.closePopup(pop);
+    addStop(e.latlng.lat, e.latlng.lng);
+  });
+});
+
+function pinHTML(stop, i) {
+  const r = state.results.get(stop.id);
+  let cls = "pin";
+  if (stop.id === state.selected) cls += " sel";
+  let badge = "";
+  if (!r || (r.status === "done" && r.sig !== stopSig(stop))) cls += " waiting";
+  if (r && r.status === "loading") cls += " loading";
+  else if (r && r.status === "error") cls += " error";
+  else if (r && r.status === "done") {
+    const list = filteredForCounts(r.data.species);
+    if (state.life.loaded) {
+      const n = list.filter(isLifer).length;
+      if (n) badge = `<span class="badge">${n}</span>`;
+    } else badge = `<span class="badge plain">${list.length}</span>`;
+  }
+  return `<div class="${cls}">${i + 1}${badge}</div>`;
+}
+
+function renderPins() {
+  if (dragging) return;
+  const ids = new Set(state.trip.stops.map((s) => s.id));
+  for (const [id, m] of markers) if (!ids.has(id)) { m.remove(); markers.delete(id); }
+  state.trip.stops.forEach((stop, i) => {
+    const html = pinHTML(stop, i);
+    let m = markers.get(stop.id);
+    if (!m) {
+      m = L.marker([stop.lat, stop.lng], { draggable: true, autoPan: true });
+      m.on("click", () => selectStop(stop.id, true));
+      m.on("dragstart", () => { dragging = true; });
+      m.on("dragend", () => {
+        dragging = false;
+        const ll = m.getLatLng();
+        const s = stopById(stop.id);
+        if (!s) return;
+        s.lat = ll.lat; s.lng = ll.lng;
+        s.region = null;
+        markDirty();
+        nameFromMap(s);
+        render();
+      });
+      m.addTo(map);
+      markers.set(stop.id, m);
+    }
+    if (m._html !== html) {
+      m.setIcon(L.divIcon({ className: "pin-wrap", html, iconSize: [30, 30], iconAnchor: [15, 15] }));
+      m._html = html;
+    }
+    m.setLatLng([stop.lat, stop.lng]);
+    const r = state.results.get(stop.id);
+    let tip = `<b>${i + 1}. ${esc(stop.name)}</b>`;
+    if (r && r.status === "done") {
+      const list = filteredForCounts(r.data.species);
+      tip += `<br>${list.length} species` + (state.life.loaded ? ` · ${list.filter(isLifer).length} possible lifers` : "");
+    }
+    if (m._tip !== tip) {
+      m.unbindTooltip().bindTooltip(tip, { direction: "top", offset: [0, -14], className: "pin-tip" });
+      m._tip = tip;
+    }
+  });
+  routeLine.setLatLngs(state.trip.stops.map((s) => [s.lat, s.lng]));
+}
+
+function fitToStops() {
+  const s = state.trip.stops;
+  if (s.length === 1) map.setView([s[0].lat, s[0].lng], 10);
+  else if (s.length > 1) map.fitBounds(L.latLngBounds(s.map((x) => [x.lat, x.lng])), { padding: [50, 50] });
+}
+
+// ------------------------------------------------------------------ stops
+async function placeName(lat, lng) {
+  try {
+    const r = await api(`/api/reverse?lat=${lat.toFixed(5)}&lng=${lng.toFixed(5)}`);
+    const a = (r && r.address) || {};
+    const place = r.name || a.city || a.town || a.village || a.hamlet || a.suburb || a.county || a.state;
+    const region = a.state || a.country;
+    if (place) return region && region !== place ? `${place}, ${region}` : place;
+  } catch (e) { /* fall through */ }
+  return null;
+}
+async function nameFromMap(stop) {
+  if (stop.nameEdited) return;
+  const n = await placeName(stop.lat, stop.lng);
+  if (n && !stop.nameEdited && stopById(stop.id)) {
+    stop.name = n;
+    persistLocal();
+    renderStops();
+    render();
+  }
+}
+
+function addStop(lat, lng, name) {
+  const stop = { id: uid(), name: name || `Stop ${state.trip.stops.length + 1}`, lat, lng, date: "", region: null };
+  if (name) stop.nameEdited = true;
+  state.trip.stops.push(stop);
+  markDirty();
+  state.selected = stop.id;
+  renderStops();
+  if (!name) nameFromMap(stop);
+  render();
+}
+
+function removeStop(id) {
+  state.trip.stops = state.trip.stops.filter((s) => s.id !== id);
+  state.results.delete(id);
+  if (state.selected === id) state.selected = state.trip.stops[0]?.id || null;
+  markDirty();
+  renderStops();
+  render();
+}
+function moveStop(id, dir) {
+  const i = stopIndex(id), j = i + dir;
+  const s = state.trip.stops;
+  if (i < 0 || j < 0 || j >= s.length) return;
+  [s[i], s[j]] = [s[j], s[i]];
+  markDirty();
+  renderStops();
+  render();
+}
+function selectStop(id, showTab) {
+  state.selected = id;
+  if (showTab) setTab("stop");
+  $$(".stop-row").forEach((el) => el.classList.toggle("sel", el.dataset.id === id));
+  render();
+}
+
+function stopStatusHTML(stop) {
+  const r = state.results.get(stop.id);
+  const btn = (label) => `<button class="find-btn" data-find="${stop.id}">${label}</button>`;
+  if (!r) return { meta: `${btn("🔍 Find birds")} <span class="muted">Not searched yet</span>`, cls: "" };
+  if (r.status === "loading") {
+    const w = r.total ? Math.round((r.done / r.total) * 100) : 4;
+    return { meta: r.note || (r.total ? `Checking ${r.done} of ${r.total} sample days…` : "Finding the county…"), progress: r.note && !r.total ? null : w, cls: "" };
+  }
+  if (r.status === "error") return { meta: `${btn("Try again")} ${esc(r.error)}`, cls: "err" };
+  const list = filteredForCounts(r.data.species);
+  const where = r.data.region ? esc(r.data.region.name.split(",")[0]) + " · " : "";
+  const lif = state.life.loaded ? ` · <span class="lifers">${list.filter(isLifer).length} possible lifers</span>` : "";
+  if (r.sig !== stopSig(stop)) return { meta: `${btn("↻ Update")} <span class="stale-note">Changed since the last search</span><br>${where}${list.length} species${lif}`, cls: "" };
+  return { meta: `${where}${list.length} species${lif}`, cls: "" };
+}
+
+function renderStops() {
+  const ol = $("#stops");
+  if (!state.trip.stops.length) {
+    ol.innerHTML = `<li class="empty">No stops yet. Search for a place, click the map, or <a class="import-link" data-import>import a whole route</a>.</li>`;
+    return;
+  }
+  const dates = effectiveDates();
+  ol.innerHTML = state.trip.stops.map((s, i) => {
+    const d = dates.get(s.id) || "";
+    const day = dayNumber(s);
+    const how = s.date
+      ? `<a class="auto-link" data-auto="${s.id}" title="Go back to the day after the previous stop">↺ auto</a>`
+      : (i === 0 ? "trip start" : d ? "day after previous" : "");
+    return `
+    <li class="stop-row ${s.id === state.selected ? "sel" : ""}" data-id="${s.id}">
+      <span class="num">${i + 1}</span>
+      <div>
+        <input class="stop-name" value="${esc(s.name)}" aria-label="Stop name">
+        <div class="stop-sub">
+          ${day ? `<span class="day">Day ${day}</span>` : ""}
+          <input type="date" class="stop-date ${s.date ? "set" : "auto"}" value="${esc(d)}" title="Date at this stop. Later stops follow on from it.">
+          <span class="fine" style="margin:0">${how}</span>
+        </div>
+        <div class="stop-meta"></div>
+        <div class="progress" hidden><i></i></div>
+      </div>
+      <div class="stop-btns">
+        <button class="icon" data-act="up" title="Move up">↑</button>
+        <button class="icon" data-act="down" title="Move down">↓</button>
+        <button class="icon" data-act="del" title="Remove stop">✕</button>
+      </div>
+    </li>`;
+  }).join("");
+  updateStopStatuses();
+}
+
+function updateStopStatuses() {
+  for (const s of state.trip.stops) {
+    const row = $(`.stop-row[data-id="${s.id}"]`);
+    if (!row) continue;
+    const st = stopStatusHTML(s);
+    const meta = $(".stop-meta", row);
+    meta.innerHTML = st.meta;
+    meta.className = "stop-meta " + st.cls;
+    const pr = $(".progress", row);
+    pr.hidden = st.progress == null;
+    if (st.progress != null) $("i", pr).style.width = st.progress + "%";
+  }
+}
+
+$("#stops").addEventListener("click", (e) => {
+  const row = e.target.closest(".stop-row");
+  if (!row) return;
+  const id = row.dataset.id;
+  if (e.target.closest("[data-find], a")) return; // handled elsewhere; stay on this tab
+  const auto = e.target.closest("[data-auto]");
+  if (auto) {
+    const st = stopById(auto.dataset.auto);
+    if (st) { st.date = ""; markDirty(); renderStops(); render(); }
+    return;
+  }
+  const act = e.target.closest("button")?.dataset.act;
+  if (act === "up") return moveStop(id, -1);
+  if (act === "down") return moveStop(id, 1);
+  if (act === "del") return removeStop(id);
+  if (e.target.matches("input")) { if (state.selected !== id) selectStop(id, false); return; }
+  selectStop(id, true);
+  const s = stopById(id);
+  if (s) map.panTo([s.lat, s.lng]);
+});
+$("#stops").addEventListener("input", (e) => {
+  const row = e.target.closest(".stop-row");
+  const s = row && stopById(row.dataset.id);
+  if (!s) return;
+  if (e.target.classList.contains("stop-name")) {
+    s.name = e.target.value;
+    s.nameEdited = true;
+    markDirty();
+    render();
+  }
+});
+$("#stops").addEventListener("change", (e) => {
+  const row = e.target.closest(".stop-row");
+  const s = row && stopById(row.dataset.id);
+  if (!s || !e.target.classList.contains("stop-date")) return;
+  const v = e.target.value || "";
+  if (stopIndex(s.id) === 0 && !s.date) {
+    // Changing the first stop's date moves the whole trip's start.
+    if (v) { setTripDate(v, state.trip.window); renderStops(); }
+    return;
+  }
+  s.date = v;
+  markDirty();
+  renderStops();
+  render();
+});
+
+// ------------------------------------------------------------------ species lists
+function tierOf(p) { return p >= 0.5 ? "t1" : p >= 0.15 ? "t2" : "t3"; }
+
+/** What counts toward the headline numbers: the likelihood filter only. */
+function filteredForCounts(species) {
+  const min = state.filters.min;
+  return species.filter((s) => s.p >= min || (min === 0 && s.recent));
+}
+function applyFilters(species) {
+  const f = state.filters;
+  let list = filteredForCounts(species);
+  if (f.lifers) list = list.filter(isLifer);
+  if (f.starred) list = list.filter(isStarred);
+  if (f.q) {
+    const q = f.q.toLowerCase();
+    list = list.filter((s) => (s.com || "").toLowerCase().includes(q) || (s.sci || "").toLowerCase().includes(q));
+  }
+  list = list.slice();
+  if (f.sort === "az") list.sort((a, b) => a.com.localeCompare(b.com));
+  else list.sort((a, b) => b.p - a.p || (b.recent - a.recent) || a.com.localeCompare(b.com));
+  return list;
+}
+
+function spRow(s, extra = "", titleText = "") {
+  const lifer = isLifer(s);
+  const on = isStarred(s);
+  const tier = tierOf(s.p);
+  const barTitle = titleText || (s.p ? `Reported on ${pct(s.p)} of sampled days` : "Not in the historic sample; seen nearby in the last 30 days");
+  return `<li class="sp ${tier} ${lifer ? "lifer" : ""} ${on ? "starred" : ""}">
+    <div>
+      <button class="star-btn ${on ? "on" : ""}" data-star="${esc(s.code)}" title="${on ? "Remove from targets" : "Star as a target"}" aria-pressed="${on}">${on ? "★" : "☆"}</button><a href="https://ebird.org/species/${encodeURIComponent(s.code)}" target="_blank" rel="noopener">${esc(s.com)}</a>${lifer ? `<span class="lifer-tag">Lifer</span>` : ""}${s.recent ? `<span class="tag" title="Reported within 25 km in the last 30 days">recent nearby</span>` : ""}
+      <div class="sci">${esc(s.sci)}</div>${extra}
+    </div>
+    <div class="sp-bar" title="${esc(barTitle)}"><div class="bar"><i style="width:${Math.max(2, Math.round(s.p * 100))}%"></i></div><span class="pct">${s.p ? pct(s.p) : "—"}</span></div>
+  </li>`;
+}
+
+function tiersHTML(list) {
+  const t1 = list.filter((s) => s.p >= 0.5).length, t2 = list.filter((s) => s.p >= 0.15 && s.p < 0.5).length;
+  return `<div class="tiers"><span class="t1">Likely (50%+): ${t1}</span><span class="t2">Possible (15–50%): ${t2}</span><span class="t3">Long shot: ${list.length - t1 - t2}</span></div>`;
+}
+function lifeNudge() {
+  return state.life.loaded ? "" : `<div class="nudge">Import your eBird life list to see which of these would be lifers. <a data-open-settings>Open Settings</a></div>`;
+}
+
+function renderStopTab() {
+  const el = $("#tab-stop");
+  const stop = stopById(state.selected);
+  if (!stop) {
+    el.innerHTML = `<div class="empty">Click a pin on the map, or a stop in the Itinerary tab, to see its birds.</div>`;
+    return;
+  }
+  const i = stopIndex(stop.id);
+  const r = state.results.get(stop.id);
+  const n = state.trip.stops.length;
+  const nav = `<div class="stop-nav">
+      <button class="ghost small" data-nav="-1" ${i === 0 ? "disabled" : ""} title="Previous stop (← key)">‹ Prev</button>
+      <span>Stop ${i + 1} of ${n}</span>
+      <button class="ghost small" data-nav="1" ${i === n - 1 ? "disabled" : ""} title="Next stop (→ key)">Next ›</button>
+    </div>`;
+  let html = nav + `<div class="sum"><h2>${i + 1}. ${esc(stop.name)}</h2>
+    <div class="where">${dayNumber(stop) ? `Day ${dayNumber(stop)} · ` : ""}${niceDate(stopDate(stop), true)}${r?.data?.region ? " · " + esc(r.data.region.name) : stop.region ? " · " + esc(stop.region.name) : ""}</div>`;
+  if (!r) {
+    const d = stopDate(stop);
+    el.innerHTML = html + `</div><div class="find-box">
+      <p>${d ? `Ready to look up birds for <b>${niceDate(d, true)}</b> (±${state.trip.window} days).` : `Set the trip's start date first.`} Check the date and window, then:</p>
+      <button class="primary" data-find="${stop.id}">🔍 Find birds for this stop</button>
+      <p class="fine">About 25 eBird requests (fewer if some days were looked up before).</p></div>`;
+    return;
+  }
+  if (r.status === "loading") {
+    const w = r && r.total ? Math.round((r.done / r.total) * 100) : 3;
+    html += `</div><div class="loading-box">${r && r.note ? esc(r.note) + "<br>" : ""}${r && r.total ? `Checking ${r.total} sample days on eBird… ${r.done}/${r.total}` : r && r.note ? "" : "Finding the nearest eBird county…"}<div class="progress"><i style="width:${w}%"></i></div></div>`;
+    el.innerHTML = html;
+    return;
+  }
+  if (r.status === "error") {
+    html += `</div><div class="nudge" style="background:#f7e1da;border-color:#e3b3a4">${esc(r.error)} ${/key|settings/i.test(r.error) ? `<a data-open-settings>Open Settings</a> · ` : ""}<a data-retry="${stop.id}">Try again</a></div>`;
+    el.innerHTML = html;
+    return;
+  }
+  const d = r.data;
+  if (r.sig !== stopSig(stop)) {
+    html += `<div class="nudge stale-box">These results are for <b>${niceDate(d.date, true)}</b>, ±${d.window} days${stop.region && d.region && stop.region.code !== d.region.code ? ` in ${esc(d.region.name.split(",")[0])}` : ""}. The stop has changed since. <button class="primary small" data-find="${stop.id}">↻ Update</button></div>`;
+  }
+  const counted = filteredForCounts(d.species);
+  const lifers = counted.filter(isLifer).length;
+  html += state.life.loaded
+    ? `<p class="big"><b>${lifers}</b>possible lifer${lifers === 1 ? "" : "s"} here</p>`
+    : `<p class="big plain"><b>${counted.length}</b>species possible here</p>`;
+  html += `<p class="method">${counted.length} species reported in ${esc(d.region.name.split(",")[0])} on sample days within ±${d.window} of ${niceDate(d.date)}, ${d.years[d.years.length - 1]}–${d.years[0]} (${d.perYear} days spread across the window in each year; ${d.withData} of ${d.totalDays} sample days had checklists${d.missing ? `; ${d.missing} days couldn't be fetched from eBird, so <a data-retry="${stop.id}">try again</a> later to fill them in` : ""})${d.recentUsed ? ", plus sightings within 25 km in the last 30 days" : ""}.</p>`;
+  html += tiersHTML(counted) + `</div>` + lifeNudge() + hotspotBoxHTML(stop, d);
+  const list = applyFilters(d.species);
+  html += list.length
+    ? `<ul class="splist">${list.map((s) => spRow(s, "", s.p ? `Reported on ${s.n} of ${d.withData} days` : "")).join("")}</ul>`
+    : `<div class="empty">No birds match these filters.</div>`;
+  el.innerHTML = html;
+}
+
+function wholeTrip() {
+  const agg = new Map();
+  let loaded = 0;
+  state.trip.stops.forEach((stop, i) => {
+    const r = state.results.get(stop.id);
+    if (!r || r.status !== "done") return;
+    loaded++;
+    for (const s of filteredForCounts(r.data.species)) {
+      let a = agg.get(s.code);
+      if (!a) agg.set(s.code, (a = { code: s.code, com: s.com, sci: s.sci, p: 0, recent: false, at: [] }));
+      a.at.push({ i, id: stop.id, p: s.p });
+      if (s.p > a.p) a.p = s.p;
+      a.recent = a.recent || s.recent;
+    }
+  });
+  return { species: Array.from(agg.values()), loaded };
+}
+
+function renderWholeTab() {
+  const el = $("#tab-whole");
+  const n = state.trip.stops.length;
+  if (!n) {
+    el.innerHTML = `<div class="empty">Add some stops and the combined list for the whole trip will appear here.</div>`;
+    return;
+  }
+  const { species, loaded } = wholeTrip();
+  const lifers = species.filter(isLifer).length;
+  let html = `<div class="sum"><h2>${esc(state.trip.name || "This trip")}</h2>
+    <div class="where">${n} stop${n === 1 ? "" : "s"} · ${tripDateRange() ? tripDateRange() + ` · ±${state.trip.window} days` : `no date yet (<a data-ask-date>set it</a>)`}</div>`;
+  const starredN = species.filter(isStarred).length;
+  html += `<p class="big plain"><b>${species.length}</b>species possible${state.life.loaded ? ` · <span style="color:var(--gold)"><b style="font-size:inherit">${lifers}</b> lifer${lifers === 1 ? "" : "s"}</span>` : ""}${starredN ? ` · <span class="starred-count">★ ${starredN} starred</span>` : ""}</p>`;
+  const unsearched = state.trip.stops.filter(needsSearch).length;
+  if (unsearched) html += `<div class="nudge">${unsearched} of ${n} stop${n === 1 ? "" : "s"} ${unsearched === 1 ? "hasn't" : "haven't"} been searched${loaded ? " or changed since" : ""}. <button class="primary small" data-find-all>🔍 Find birds for ${unsearched === 1 ? "it" : "them"}</button></div>`;
+  else if (loaded < n) html += `<p class="method">Still loading ${n - loaded} of ${n} stops…</p>`;
+  else html += `<p class="method">Each bird shows its best chance at any one stop. Numbered chips show where it's been reported; gold is the best stop. Click a chip to open that stop.</p>`;
+  html += tiersHTML(species) + `</div>` + lifeNudge();
+  const list = applyFilters(species);
+  html += list.length
+    ? `<ul class="splist">${list.map((s) => {
+        const best = s.at.reduce((a, b) => (b.p > a.p ? b : a));
+        const chips = s.at.sort((a, b) => a.i - b.i).map((x) => `<button class="chip ${x === best ? "best" : ""}" data-stop="${x.id}" title="${esc(state.trip.stops[x.i]?.name)}: ${x.p ? pct(x.p) : "recent"}">${x.i + 1}</button>`).join("");
+        return spRow(s, `<div class="at">${chips} ${s.at.length} of ${n} stop${n === 1 ? "" : "s"}</div>`, `Best stop: ${state.trip.stops[best.i]?.name}`);
+      }).join("")}</ul>`
+    : `<div class="empty">${loaded ? "No birds match these filters." : "Loading…"}</div>`;
+  el.innerHTML = html;
+}
+
+function renderLifeStatus() {
+  const L_ = state.life;
+  $("#lifeStatus").innerHTML = L_.loaded
+    ? `Life list: <b>${L_.count}</b> species loaded${L_.importedAt ? ` (imported ${esc(L_.importedAt.replace("T", " "))})` : ""}. <a data-open-settings>Update</a>`
+    : `No life list yet. <a data-open-settings>Import it in Settings</a> to see possible lifers.`;
+}
+
+// ------------------------------------------------------------------ render loop
+let rafPending = false;
+const lastKeys = { stop: "", whole: "" };
+function render() {
+  if (rafPending) return;
+  rafPending = true;
+  requestAnimationFrame(() => {
+    rafPending = false;
+    renderPins();
+    renderHotspotLayer();
+    updateStopStatuses();
+    renderFindAll();
+    const common = JSON.stringify([state.filters, state.life.count, state.trip.name, state.trip.date, state.trip.window, state.trip.stops.map((s) => [s.id, s.name, stopDate(s)]), state.trip.stars, hsVersion]);
+    if (state.tab === "stop") {
+      const r = state.results.get(state.selected);
+      const selStop = stopById(state.selected);
+      const key = common + "|" + state.selected + "|" + (selStop ? stopSig(selStop) : "") + "|" + (r ? r.status + r.done + r.total + r.sig + (r.note || "") : "none") + "|" + JSON.stringify(stopById(state.selected)?.hotspots) + stopById(state.selected)?.hsRadius;
+      if (key !== lastKeys.stop) { lastKeys.stop = key; renderStopTab(); }
+    }
+    if (state.tab === "whole") {
+      const key = common + "|" + state.trip.stops.map((s) => { const r = state.results.get(s.id); return stopSig(s) + (r ? r.status + r.sig : "-"); }).join(",");
+      if (key !== lastKeys.whole) { lastKeys.whole = key; renderWholeTab(); }
+    }
+    renderLifeStatus();
+  });
+}
+
+function setTab(tab) {
+  state.tab = tab;
+  $$(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  $("#tab-trip").hidden = tab !== "trip";
+  $("#tab-stop").hidden = tab !== "stop";
+  $("#tab-whole").hidden = tab !== "whole";
+  $("#filters").hidden = tab === "trip";
+  lastKeys.stop = lastKeys.whole = "";
+  render();
+}
+$$(".tabs button").forEach((b) => b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-open-settings]")) { e.preventDefault(); openSettings(); }
+  if (e.target.closest("[data-ask-date]")) { e.preventDefault(); askDate(true); }
+  const nav = e.target.closest("[data-nav]");
+  if (nav) { stepStop(+nav.dataset.nav); return; }
+  const star = e.target.closest("[data-star]");
+  if (star) { e.preventDefault(); toggleStar(star.dataset.star); return; }
+  const hsRun = e.target.closest("[data-hs-run]");
+  if (hsRun) { const st = stopById(hsRun.dataset.hsRun); if (st) runHotspots(st); }
+  if (e.target.closest("[data-import]")) { e.preventDefault(); $("#btnImportRoute").click(); }
+  const chip = e.target.closest(".chip[data-stop]");
+  if (chip) { selectStop(chip.dataset.stop, true); const s = stopById(chip.dataset.stop); if (s) map.panTo([s.lat, s.lng]); }
+  const retry = e.target.closest("[data-retry]");
+  if (retry) { const s = stopById(retry.dataset.retry); if (s) { state.results.delete(s.id); findBirds([s]); } }
+  const find = e.target.closest("[data-find]");
+  if (find) { e.preventDefault(); const s = stopById(find.dataset.find); if (s) findBirds([s]); return; }
+  if (e.target.closest("[data-find-all]")) { e.preventDefault(); findBirds(state.trip.stops); return; }
+});
+
+// filters
+$("#fLifers").addEventListener("change", (e) => { state.filters.lifers = e.target.checked; render(); });
+$("#fStarred").addEventListener("change", (e) => { state.filters.starred = e.target.checked; render(); });
+document.addEventListener("change", (e) => {
+  const c = e.target.closest("[data-hs-count]");
+  const rad = e.target.closest("[data-hs-radius]");
+  const st = stopById((c || rad)?.dataset.hsCount || (c || rad)?.dataset.hsRadius);
+  if (!st) return;
+  if (c) st.hotspots = +c.value;
+  if (rad) {
+    st.hsRadius = +rad.value;
+  }
+  hsVersion++;
+  markDirty();
+  render();
+});
+$("#fMin").addEventListener("change", (e) => { state.filters.min = +e.target.value; render(); });
+$("#fSort").addEventListener("change", (e) => { state.filters.sort = e.target.value; render(); });
+$("#fSearch").addEventListener("input", (e) => { state.filters.q = e.target.value.trim(); render(); });
+
+// ------------------------------------------------------------------ trip controls
+$("#tripName").addEventListener("input", (e) => { state.trip.name = e.target.value; markDirty(); render(); });
+$("#tripDate").addEventListener("change", (e) => {
+  if (!e.target.value) { e.target.value = state.trip.date; return; }
+  setTripDate(e.target.value, state.trip.window);
+});
+
+function setTripDate(date, win) {
+  state.trip.date = date;
+  state.trip.window = win;
+  $("#tripDate").value = date;
+  $("#tripWindow").value = String(win);
+  updateDateNeed();
+  markDirty();
+  renderStops();
+  render();
+}
+function updateDateNeed() {
+  const need = !state.trip.date;
+  $("#tripDate").classList.toggle("need", need);
+  $("#dateNeed").hidden = !need;
+}
+
+/** Ask for the trip date (once per trip unless the person asks for it). */
+let dateAsked = false;
+function askDate(force = false) {
+  const dlg = $("#dateDlg");
+  if (dlg.open || (!force && dateAsked)) return;
+  dateAsked = true;
+  $("#dlgDate").value = state.trip.date || "";
+  $("#dlgWindow").value = String(state.trip.window);
+  for (const d of $$("dialog[open]")) d.close();
+  dlg.showModal();
+  setTimeout(() => $("#dlgDate").focus(), 50);
+}
+$("#dateForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("#dlgDate").value;
+  if (!parseISO(v)) { $("#dlgDate").focus(); return; }
+  $("#dateDlg").close();
+  setTripDate(v, +$("#dlgWindow").value);
+  // If the date was asked for because you clicked "Find birds", carry on with that search.
+  const waiting = state.trip.stops.filter((st) => pendingFind.has(st.id));
+  pendingFind.clear();
+  if (waiting.length) findBirds(waiting);
+});
+$("#dateDlg").addEventListener("close", () => { if (!state.trip.date) pendingFind.clear(); });
+$("#tripWindow").addEventListener("change", (e) => { state.trip.window = +e.target.value; markDirty(); renderStops(); render(); });
+
+$("#searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("#searchInput").value.trim();
+  const ul = $("#searchResults");
+  if (!q) { ul.innerHTML = ""; return; }
+  ul.innerHTML = `<li class="fine">Searching…</li>`;
+  try {
+    const res = await api(`/api/geocode?q=${encodeURIComponent(q)}`);
+    if (!res.length) { ul.innerHTML = `<li class="fine">No places found. Try adding a state or country.</li>`; return; }
+    ul.innerHTML = res.map((r, i) => `<li data-i="${i}"><b>＋</b> ${esc(r.display_name)}</li>`).join("");
+    $$("li[data-i]", ul).forEach((li) => li.addEventListener("click", () => {
+      const r = res[+li.dataset.i];
+      const short = r.name || r.display_name.split(",").slice(0, 2).join(",");
+      addStop(parseFloat(r.lat), parseFloat(r.lon), short);
+      ul.innerHTML = "";
+      $("#searchInput").value = "";
+      fitToStops();
+    }));
+  } catch (err) {
+    ul.innerHTML = `<li class="fine">${esc(err.message)}</li>`;
+  }
+});
+
+function loadTrip(trip, { clean = true } = {}) {
+  const t = blankTrip();
+  state.trip = {
+    id: trip.id || null,
+    name: trip.name || "",
+    v: 2,
+    stars: Array.isArray(trip.stars) ? trip.stars.filter((x) => typeof x === "string") : [],
+    date: parseISO(trip.date) ? trip.date : "",
+    window: [3, 5, 7, 10, 15].includes(+trip.window) ? +trip.window : 7,
+    stops: (trip.stops || []).filter((s) => isFinite(s.lat) && isFinite(s.lng)).map((s) => ({
+      id: s.id || uid(), name: s.name || "Stop", lat: +s.lat, lng: +s.lng,
+      date: parseISO(s.date) ? s.date : (!(trip.v >= 2) && parseISO(trip.date) ? trip.date : ""),
+      region: s.region || null, regionFor: s.regionFor, nameEdited: !!s.nameEdited,
+      hotspots: [1, 2, 3, 4, 5].includes(+s.hotspots) ? +s.hotspots : 2,
+      hsRadius: [10, 25, 50].includes(+s.hsRadius) ? +s.hsRadius : 25,
+      result: s.result && s.result.sig && s.result.data ? s.result : null,
+      hsCache: s.hsCache && s.hsCache.key && Array.isArray(s.hsCache.candidates) ? s.hsCache : null,
+    })),
+  };
+  state.results.clear();
+  hsState.clear();
+  hsVersion++;
+  // Bring back saved results and hotspot plans (no eBird requests).
+  for (const st of state.trip.stops) {
+    if (st.result) state.results.set(st.id, { sig: st.result.sig, status: "done", data: st.result.data });
+    if (st.hsCache) {
+      for (const c of st.hsCache.candidates) hsLists.set(c.locId, new Set(c.codes || []));
+      hsState.set(st.id, { key: st.hsCache.key, status: "done", candidates: st.hsCache.candidates.map(({ codes, ...c }) => c) });
+    }
+  }
+  state.selected = state.trip.stops[0]?.id || null;
+  $("#tripName").value = state.trip.name;
+  $("#tripDate").value = state.trip.date;
+  $("#tripWindow").value = String(state.trip.window);
+  dateAsked = false;
+  updateDateNeed();
+  if (clean) markClean(); else markDirty();
+  renderStops();
+  fitToStops();
+  render();
+}
+
+function confirmDiscard() {
+  return !state.dirty || !state.trip.stops.length || confirm("You have unsaved changes to this trip. Discard them?");
+}
+
+$("#btnNew").addEventListener("click", () => {
+  if (!confirmDiscard()) return;
+  loadTrip(blankTrip());
+  map.setView([39.5, -98.35], 4);
+  setTab("trip");
+  $("#tripName").focus();
+});
+
+$("#btnSave").addEventListener("click", saveTrip);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); saveTrip(); }
+});
+async function saveTrip() {
+  if (!state.trip.name.trim()) {
+    const n = prompt("Name this trip:", "");
+    if (n === null) return;
+    state.trip.name = n.trim() || "Untitled trip";
+    $("#tripName").value = state.trip.name;
+  }
+  try {
+    const saved = await api("/api/trips", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(state.trip) });
+    state.trip.id = saved.id;
+    markClean();
+    toast(`Saved “${state.trip.name}”`);
+  } catch (e) {
+    toast("Couldn't save: " + e.message);
+  }
+}
+
+$("#btnTrips").addEventListener("click", openTrips);
+async function openTrips() {
+  const ul = $("#tripsList");
+  ul.innerHTML = `<li class="fine">Loading…</li>`;
+  $("#tripsDlg").showModal();
+  try {
+    const trips = await api("/api/trips");
+    if (!trips.length) { ul.innerHTML = `<li class="fine">No saved trips yet. Build one and press Save.</li>`; return; }
+    ul.innerHTML = trips.map((t) => `<li>
+      <div class="tn"><b>${esc(t.name || "Untitled trip")}</b><span>${niceDate(t.date, true)} · ${t.stops} stop${t.stops === 1 ? "" : "s"}</span></div>
+      <button class="primary small" data-open="${esc(t.id)}">Open</button>
+      <button class="ghost small" data-del="${esc(t.id)}" data-name="${esc(t.name)}">Delete</button></li>`).join("");
+  } catch (e) {
+    ul.innerHTML = `<li class="fine">${esc(e.message)}</li>`;
+  }
+}
+$("#tripsList").addEventListener("click", async (e) => {
+  const open = e.target.closest("[data-open]");
+  const del = e.target.closest("[data-del]");
+  if (open) {
+    if (!confirmDiscard()) return;
+    try {
+      const t = await api(`/api/trips/${encodeURIComponent(open.dataset.open)}`);
+      $("#tripsDlg").close();
+      loadTrip(t);
+      setTab(state.trip.stops.length ? "whole" : "trip");
+    } catch (err) { toast(err.message); }
+  } else if (del) {
+    if (!confirm(`Delete “${del.dataset.name || "this trip"}”? This can't be undone.`)) return;
+    await api(`/api/trips/${encodeURIComponent(del.dataset.del)}`, { method: "DELETE" }).catch((err) => toast(err.message));
+    if (state.trip.id === del.dataset.del) { state.trip.id = null; markDirty(); }
+    openTrips();
+  }
+});
+
+$("#btnExport").addEventListener("click", () => {
+  const data = { app: "peregrine", version: 1, trip: state.trip };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.trip.name || "trip").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") + ".json";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$("#btnImport").addEventListener("click", () => $("#importFile").click());
+$("#importFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  e.target.value = "";
+  if (!f || !confirmDiscard()) return;
+  try {
+    const obj = JSON.parse(await f.text());
+    const trip = obj.trip || obj;
+    if (!Array.isArray(trip.stops)) throw new Error("not a trip file");
+    trip.id = null; // importing makes a new trip; Save won't overwrite another one
+    loadTrip(trip, { clean: false });
+    toast(`Imported “${trip.name || "trip"}”. Press Save to keep it.`);
+  } catch (err) {
+    toast("That file isn't a Peregrine trip.");
+  }
+});
+
+// ------------------------------------------------------------------ settings
+$$("[data-close]").forEach((b) => b.addEventListener("click", () => b.closest("dialog").close()));
+
+async function openSettings(welcome = false) {
+  $("#welcome").hidden = !welcome;
+  $("#keyMsg").textContent = "";
+  $("#lifeMsg").textContent = "";
+  try {
+    const s = await api("/api/settings");
+    $("#keyInput").placeholder = s.keyHint ? `Key saved (${s.keyHint}). Paste a new one to replace it.` : "Paste your eBird API key";
+  } catch (e) { /* ignore */ }
+  showLifeMsg();
+  if (!$("#settingsDlg").open) $("#settingsDlg").showModal();
+}
+function showLifeMsg() {
+  const m = $("#lifeMsg");
+  if (state.life.loaded) { m.className = "msg ok"; m.textContent = `${state.life.count} species loaded from ${state.life.filename || "your file"}.`; }
+}
+$("#btnSettings").addEventListener("click", () => openSettings());
+
+$("#keyForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const m = $("#keyMsg");
+  const key = $("#keyInput").value.trim();
+  if (!key) return;
+  m.className = "msg"; m.textContent = "Checking with eBird…";
+  try {
+    const r = await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: key }) });
+    m.className = "msg " + (r.ok ? "ok" : "bad");
+    m.textContent = r.message;
+    $("#keyInput").value = "";
+    if (r.ok) {
+      // retry any stops that failed for lack of a key
+      toast("Key saved. Click Find birds to search.");
+    }
+  } catch (err) { m.className = "msg bad"; m.textContent = err.message; }
+});
+
+$("#lifeFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  const m = $("#lifeMsg");
+  if (!f) return;
+  m.className = "msg"; m.textContent = "Reading…";
+  try {
+    const obj = await api("/api/lifelist", { method: "POST", headers: { "Content-Type": "text/csv", "X-Filename": encodeURIComponent(f.name) }, body: await f.text() });
+    setLifeList(obj);
+    showLifeMsg();
+    render();
+  } catch (err) { m.className = "msg bad"; m.textContent = err.message; }
+  e.target.value = "";
+});
+$("#btnClearLife").addEventListener("click", async () => {
+  if (!state.life.loaded || !confirm("Remove your imported life list from the planner?")) return;
+  await api("/api/lifelist", { method: "DELETE" }).catch(() => {});
+  setLifeList(null);
+  $("#lifeMsg").className = "msg"; $("#lifeMsg").textContent = "Life list removed.";
+  render();
+});
+
+// ------------------------------------------------------------------ import a route
+function addStops(list, replace) {
+  if (replace) { state.trip.stops = []; state.results.clear(); }
+  const added = list.map((p, i) => {
+    const s = { id: uid(), name: p.name || `Stop ${state.trip.stops.length + i + 1}`, lat: +p.lat, lng: +p.lng, date: p.date || "", region: null, hotspots: 2, hsRadius: 25 };
+    if (p.name) s.nameEdited = true;
+    return s;
+  });
+  state.trip.stops.push(...added);
+  if (added.length) state.selected = added[0].id;
+  markDirty();
+  updateDateNeed();
+  renderStops();
+  fitToStops();
+  for (const s of added) if (!s.nameEdited) nameFromMap(s);
+  render();
+}
+
+$("#btnImportRoute").addEventListener("click", () => {
+  $("#importMsg").textContent = "";
+  $("#importMsg").className = "msg";
+  if (!$("#importDay1").value && state.trip.date) $("#importDay1").value = state.trip.date;
+  $("#importDlg").showModal();
+  setTimeout(() => $("#importText").focus(), 50);
+});
+$("#btnDoImport").addEventListener("click", async () => {
+  const m = $("#importMsg");
+  const file = $("#importRouteFile").files[0];
+  const text = $("#importText").value.trim();
+  if (!file && !text) { m.className = "msg bad"; m.textContent = "Paste a link or some places, or choose a file."; return; }
+  const hasDays = !file && /^\s*(?:days?|nights?|d)\s*\d/im.test(text);
+  const day1 = $("#importDay1").value;
+  if (hasDays && !parseISO(day1)) { m.className = "msg bad"; m.textContent = "Your list has day numbers. Set the date of Day 1 so each stop gets the right date."; $("#importDay1").focus(); return; }
+  const btn = $("#btnDoImport");
+  btn.disabled = true;
+  m.className = "msg";
+  m.textContent = "Finding the places… (about a second each)";
+  try {
+    const r = file
+      ? await api("/api/import-route", { method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Filename": encodeURIComponent(file.name) }, body: await file.arrayBuffer() })
+      : await api("/api/import-route", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, suffix: $("#importSuffix").value.trim() }) });
+    if (!r.stops.length) {
+      m.className = "msg bad";
+      m.textContent = "Couldn't find any of those places." + (r.failed.length ? " Try adding the state or country to each line." : "");
+      return;
+    }
+    const replace = $("#importReplace").checked;
+    if (hasDays) {
+      for (const st of r.stops) if (st.day) st.date = iso(addDays(parseISO(day1), st.day - 1));
+      if (replace || !state.trip.date || !state.trip.stops.length) {
+        state.trip.date = day1;
+        $("#tripDate").value = day1;
+      }
+    }
+    addStops(r.stops, replace);
+    const extra = [...(r.notes || [])];
+    if (r.failed.length) extra.push(`Couldn't find: ${r.failed.join("; ")}. Try adding the state or country, or add those by searching.`);
+    if (extra.length) {
+      m.className = "msg " + (r.failed.length ? "bad" : "ok");
+      m.textContent = `Added ${r.stops.length} stop${r.stops.length === 1 ? "" : "s"}. ` + extra.join(" ");
+      $("#importText").value = r.failed.join("\n");
+      $("#importRouteFile").value = "";
+    } else {
+      $("#importDlg").close();
+      $("#importText").value = "";
+      $("#importRouteFile").value = "";
+      toast(`Added ${r.stops.length} stop${r.stops.length === 1 ? "" : "s"}`);
+    }
+  } catch (e) {
+    m.className = "msg bad";
+    m.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ------------------------------------------------------------------ start
+window.addEventListener("beforeunload", () => persistLocal());
+
+(async function init() {
+  let restored = null;
+  try { restored = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) { /* ignore */ }
+  try { setLifeList(await api("/api/lifelist")); } catch (e) { /* none */ }
+  let settings = { hasKey: false };
+  try { settings = await api("/api/settings"); } catch (e) { toast(e.message); }
+  state.mock = !!settings.mock;
+  $("#mockBanner").hidden = !state.mock;
+  if (restored && restored.trip) loadTrip(restored.trip, { clean: !restored.dirty });
+  else loadTrip(blankTrip());
+  renderLifeStatus();
+  if (!settings.hasKey) openSettings(true);
+})();
+
+// ------------------------------------------------------------------ best hotspots at a stop
+/* For a stop, look at the nearby eBird hotspots with the most species (up to 10),
+   read each one's all-time species list (1 request each, saved 30 days), then pick
+   the combination of N hotspots that covers the most valuable birds. A bird's value
+   is its likelihood around the date, multiplied by 100 if starred, 1 if a lifer,
+   and almost nothing otherwise, so starred birds come first, then lifers. */
+const MAX_CANDIDATES = 10;
+
+function hsKey(stop) { return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${stop.hsRadius || 25}`; }
+
+async function runHotspots(stop) {
+  const key = hsKey(stop);
+  const st = { key, status: "loading", done: 0, total: 0, candidates: [], error: null };
+  hsState.set(stop.id, st);
+  hsVersion++;
+  render();
+  const stale = () => hsState.get(stop.id) !== st;
+  try {
+    const radius = stop.hsRadius || 25;
+    const hs = await limiter(() => api(`/api/ebird/ref/hotspot/geo?lat=${stop.lat.toFixed(4)}&lng=${stop.lng.toFixed(4)}&dist=${radius}&fmt=json`));
+    if (stale()) return;
+    const cands = (Array.isArray(hs) ? hs : [])
+      .map((h) => ({ locId: h.locId, name: h.locName, lat: h.lat, lng: h.lng, n: h.numSpeciesAllTime || 0, dist: haversineKm(stop, h) }))
+      .filter((h) => h.locId && h.dist <= radius + 1)
+      .sort((a, b) => b.n - a.n || a.dist - b.dist)
+      .slice(0, MAX_CANDIDATES);
+    if (!cands.length) throw new Error(`No eBird hotspots within ${radius} km of this stop.`);
+    st.total = cands.length;
+    await Promise.all(cands.map((c) => limiter(async () => {
+      if (stale()) return;
+      if (!hsLists.has(c.locId)) {
+        try {
+          const codes = await api(`/api/ebird/product/spplist/${encodeURIComponent(c.locId)}`);
+          hsLists.set(c.locId, new Set(Array.isArray(codes) ? codes : []));
+        } catch (e) {
+          if (e.status === 401) throw e;
+          hsLists.set(c.locId, null); // couldn't load this one; skip it
+        }
+      }
+      st.done++;
+      hsVersion++;
+      render();
+    })));
+    if (stale()) return;
+    st.candidates = cands.filter((c) => hsLists.get(c.locId));
+    if (!st.candidates.length) throw new Error("Couldn't load the hotspot species lists from eBird. Try again in a few minutes.");
+    st.status = "done";
+    stop.hsCache = { key, candidates: st.candidates.map((c) => ({ ...c, codes: Array.from(hsLists.get(c.locId)) })) };
+    markDirty();
+  } catch (e) {
+    if (stale()) return;
+    st.status = "error";
+    st.error = e.message || String(e);
+  }
+  hsVersion++;
+  render();
+}
+
+function birdValue(sp) {
+  const base = 0.25 + (sp.p || 0);
+  if (isStarred(sp)) return 100 * base;
+  if (!state.life.loaded) return base;
+  return (isLifer(sp) ? 1 : 0.01) * base;
+}
+
+function* combos(n, k, start = 0, acc = []) {
+  if (acc.length === k) { yield acc.slice(); return; }
+  for (let i = start; i <= n - (k - acc.length); i++) { acc.push(i); yield* combos(n, k, i + 1, acc); acc.pop(); }
+}
+
+/** Best N hotspots for this stop's birds (exhaustive: at most 252 combinations). */
+function planHotspots(stop, data) {
+  const st = hsState.get(stop.id);
+  if (!st || st.status !== "done" || st.key !== hsKey(stop)) return null;
+  const birds = data.species.filter((s) => s.p > 0 || s.recent);
+  const value = new Map(birds.map((b) => [b.code, birdValue(b)]));
+  const cands = st.candidates;
+  const k = Math.min(stop.hotspots || 2, cands.length);
+  let best = null, bestScore = -1;
+  for (const combo of combos(cands.length, k)) {
+    const seen = new Set();
+    let score = 0;
+    for (const ci of combo) for (const code of hsLists.get(cands[ci].locId)) {
+      if (!seen.has(code) && value.has(code)) { seen.add(code); score += value.get(code); }
+    }
+    // tie-break: closer hotspots win
+    score -= combo.reduce((a, ci) => a + cands[ci].dist, 0) * 1e-6;
+    if (score > bestScore) { bestScore = score; best = combo; }
+  }
+  // Present them in the order that adds the most first, with what each adds.
+  const remaining = best.slice();
+  const covered = new Set();
+  const steps = [];
+  const byCode = new Map(birds.map((b) => [b.code, b]));
+  while (remaining.length) {
+    let pick = 0, pickGain = -1;
+    remaining.forEach((ci, idx) => {
+      let g = 0;
+      for (const code of hsLists.get(cands[ci].locId)) if (!covered.has(code) && value.has(code)) g += value.get(code);
+      if (g > pickGain) { pickGain = g; pick = idx; }
+    });
+    const ci = remaining.splice(pick, 1)[0];
+    const adds = [];
+    for (const code of hsLists.get(cands[ci].locId)) if (!covered.has(code) && byCode.has(code)) { covered.add(code); adds.push(byCode.get(code)); }
+    adds.sort((a, b) => birdValue(b) - birdValue(a));
+    steps.push({ hotspot: cands[ci], adds });
+  }
+  const starred = birds.filter(isStarred);
+  const lifers = birds.filter(isLifer);
+  const missedStarred = starred.filter((b) => !covered.has(b.code)).map((b) => ({
+    bird: b, elsewhere: cands.filter((c) => hsLists.get(c.locId).has(b.code)).map((c) => c.name),
+  }));
+  return {
+    steps, covered,
+    starredTotal: starred.length, starredCovered: starred.length - missedStarred.length,
+    liferTotal: lifers.length, liferCovered: lifers.filter((b) => covered.has(b.code)).length,
+    speciesTotal: birds.length, missedStarred, candidates: cands.length,
+  };
+}
+
+const LETTERS = "ABCDE";
+function namesList(list, max = 6) {
+  const names = list.slice(0, max).map((b) => (isStarred(b) ? "★ " : "") + esc(b.com));
+  return names.join(", ") + (list.length > max ? `, +${list.length - max} more` : "");
+}
+
+function hotspotBoxHTML(stop, data) {
+  const st = hsState.get(stop.id);
+  const fresh = st && st.key === hsKey(stop);
+  const opts = (vals, cur, fmt) => vals.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${fmt(v)}</option>`).join("");
+  let html = `<div class="hs-box">
+    <div class="hs-head">
+      <b>Best hotspots</b>
+      <span>Visit <select data-hs-count="${stop.id}">${opts([1, 2, 3, 4, 5], stop.hotspots || 2, (v) => v)}</select>
+      within <select data-hs-radius="${stop.id}">${opts([10, 25, 50], stop.hsRadius || 25, (v) => v + " km")}</select></span>
+      ${fresh && st.status !== "error" ? "" : `<button class="primary small" data-hs-run="${stop.id}">Find best hotspots</button>`}
+    </div>`;
+  if (!fresh) {
+    const nStar = data.species.filter(isStarred).length;
+    html += `<p class="fine">Picks the hotspots that cover the most ${state.life.loaded ? "lifers" : "species"} here${nStar ? `, putting your <b>${nStar} starred</b> bird${nStar === 1 ? "" : "s"} first` : ". Star (☆) the birds you want most and they'll count first"}. Uses about ${MAX_CANDIDATES} eBird requests the first time, saved for 30 days.</p>`;
+  } else if (st.status === "loading") {
+    html += `<p class="fine">Reading hotspot species lists… ${st.done}/${st.total || "?"}</p>`;
+  } else if (st.status === "error") {
+    html += `<p class="msg bad">${esc(st.error)}</p>`;
+  } else {
+    const plan = planHotspots(stop, data);
+    const parts = [];
+    if (plan.starredTotal) parts.push(`<b>★ ${plan.starredCovered} of ${plan.starredTotal}</b> starred`);
+    if (state.life.loaded) parts.push(`<b>${plan.liferCovered} of ${plan.liferTotal}</b> possible lifers`);
+    else parts.push(`<b>${plan.covered.size} of ${plan.speciesTotal}</b> species`);
+    html += `<p class="hs-sum">These ${plan.steps.length} cover ${parts.join(" and ")} at this stop.</p><ol class="hs-list">`;
+    plan.steps.forEach((step, i) => {
+      const h = step.hotspot;
+      const starAdds = step.adds.filter(isStarred);
+      const liferAdds = state.life.loaded ? step.adds.filter((b) => isLifer(b) && !isStarred(b)) : [];
+      const other = step.adds.length - starAdds.length - liferAdds.length;
+      const bits = [];
+      if (starAdds.length) bits.push(`<span class="hs-star">${namesList(starAdds)}</span>`);
+      if (liferAdds.length) bits.push(`${liferAdds.length} lifer${liferAdds.length === 1 ? "" : "s"}: ${namesList(liferAdds)}`);
+      if (other > 0) bits.push(`+${other} other species`);
+      html += `<li><span class="hs-letter">${LETTERS[i]}</span><div>
+        <a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener"><b>${esc(h.name)}</b></a>
+        <span class="fine">${h.dist.toFixed(1)} km · ${h.n} species all-time</span>
+        <div class="hs-adds">${i ? "Adds " : "Covers "}${bits.join(" · ") || "nothing new"}</div></div></li>`;
+    });
+    html += `</ol>`;
+    if (plan.missedStarred.length) {
+      html += `<p class="hs-miss">Not covered: ${plan.missedStarred.map((m) => `★ ${esc(m.bird.com)}${m.elsewhere.length ? ` (reported at ${esc(m.elsewhere[0])}${m.elsewhere.length > 1 ? ` and ${m.elsewhere.length - 1} more` : ""}; try visiting more hotspots)` : " (not on any of the nearby hotspot lists checked)"}`).join("; ")}.</p>`;
+    }
+    html += `<p class="fine">Chosen from the ${plan.candidates} hotspots with the most species within ${stop.hsRadius || 25} km, using each hotspot's all-time eBird list weighted by how likely each bird is around your date. Starred birds count most, then lifers.</p>`;
+  }
+  return html + `</div>`;
+}
+
+const hotspotLayer = L.layerGroup().addTo(map);
+let hotspotLayerKey = "";
+function renderHotspotLayer() {
+  const stop = stopById(state.selected);
+  const r = stop && state.results.get(stop.id);
+  let plan = null;
+  if (stop && r && r.status === "done" && state.tab === "stop") plan = planHotspots(stop, r.data);
+  const key = plan ? stop.id + hsVersion + plan.steps.map((s) => s.hotspot.locId).join(",") + JSON.stringify(state.trip.stars) : "";
+  if (key === hotspotLayerKey) return;
+  hotspotLayerKey = key;
+  hotspotLayer.clearLayers();
+  if (!plan) return;
+  plan.steps.forEach((step, i) => {
+    const h = step.hotspot;
+    const icon = L.divIcon({ className: "pin-wrap", html: `<div class="hs-pin">${LETTERS[i]}</div>`, iconSize: [24, 24], iconAnchor: [12, 12] });
+    const starAdds = step.adds.filter(isStarred).length;
+    const lif = step.adds.filter(isLifer).length;
+    L.marker([h.lat, h.lng], { icon, zIndexOffset: -100 })
+      .bindTooltip(`<b>${LETTERS[i]}. ${esc(h.name)}</b><br>${starAdds ? `★ ${starAdds} starred · ` : ""}${state.life.loaded ? `${lif} lifers` : `${step.adds.length} species`}`, { direction: "top", offset: [0, -10] })
+      .bindPopup(`<b>${esc(h.name)}</b><br><a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener">Open on eBird ↗</a>`)
+      .addTo(hotspotLayer);
+  });
+}
+
+// ------------------------------------------------------------------ previous / next stop
+function stepStop(dir) {
+  const stops = state.trip.stops;
+  if (!stops.length) return;
+  const i = Math.max(0, stopIndex(state.selected));
+  const j = Math.min(stops.length - 1, Math.max(0, i + dir));
+  if (j === i && stopIndex(state.selected) >= 0) return;
+  selectStop(stops[j].id, true);
+  map.panTo([stops[j].lat, stops[j].lng]);
+  $("#tab-stop").scrollTop = 0;
+}
+document.addEventListener("keydown", (e) => {
+  if (state.tab !== "stop" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest("input, select, textarea, [contenteditable]") || document.querySelector("dialog[open]")) return;
+  if (e.key === "ArrowLeft") { e.preventDefault(); stepStop(-1); }
+  if (e.key === "ArrowRight") { e.preventDefault(); stepStop(1); }
+});
+
+function renderFindAll() {
+  const bar = $("#findAll");
+  const todo = state.trip.stops.filter(needsSearch);
+  bar.hidden = !todo.length;
+  if (!todo.length) return;
+  const label = todo.length === state.trip.stops.length ? `all ${todo.length} stop${todo.length === 1 ? "" : "s"}` : `${todo.length} stop${todo.length === 1 ? "" : "s"} not yet searched`;
+  const html = `<button class="primary" data-find-all>🔍 Find birds for ${label}</button><span class="fine">about ${todo.length * 25} eBird requests, fewer for anything looked up before</span>`;
+  if (bar.dataset.html !== html) { bar.innerHTML = html; bar.dataset.html = html; }
+}
