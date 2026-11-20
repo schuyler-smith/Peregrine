@@ -23,7 +23,7 @@ The Settings window opens by itself the first time.
 
 ## Using it
 
-- **Add stops:** search for a place in the Itinerary tab, or **double-click** the map and choose **＋ Add stop here**. Drag a pin to move it. To reorder stops, drag a stop's number in the Itinerary list up or down (or use ↑ ↓). ✕ removes a stop.
+- **Add stops:** search for a place in the Itinerary tab, or **double-click** the map and choose **＋ Add stop here**. Drag a pin to move it. To reorder stops, drag a stop's card in the Itinerary list up or down from anywhere outside its fields and buttons (on a touch screen, drag by its number), or use ↑ ↓. ✕ removes a stop.
 - **Import a route:** click **↥ Import a route** in the Itinerary tab, then do one of these:
   - Paste a **Google Maps directions link**: add all your stops in Google Maps, then Share → Copy link.
   - Paste a **list of places**, one per line (names, addresses, or `lat, lng`).
@@ -34,7 +34,7 @@ The Settings window opens by itself the first time.
   Places are looked up at about one per second. Anything that can't be found is listed so you can fix it.
 - **Find birds (you decide when):** adding, moving or re-dating stops never contacts eBird on its own. Each stop has a **🔍 Find birds** button, and **Find birds for all stops** is at the top of the list, showing roughly how many eBird requests it will use. If you change a stop's date, the window or its location afterwards, the stop shows **↻ Update** and keeps its old results (marked as out of date) until you click it. Results and hotspot plans are saved with the trip, so reopening a trip needs no new requests.
 - **Dates:** set the **Start date** at the top of the Itinerary tab (if you click Find birds without one, it asks). Stop 1 is on the start date and **each stop after it is the next day** (shown as Day 1, Day 2…). Change any stop's date and the stops after it follow on from it. **↺ auto** puts a stop back to "day after the previous one." Set the same date on two stops to visit both in one day. Reordering stops re-dates them. The window (±3, 5, 7, 10 or 15 days) sets how wide a slice of the calendar is sampled.
-- **Stop tab:** click a pin or a stop to see its birds, most likely first. Use **‹ Prev / Next ›** at the top (or the ← → keys) to step through the stops in order. Use **Lifers only**, **★ Starred only**, the likelihood filter or the search box to narrow the list.
+- **Location tab:** click a pin or a stop to see its birds, most likely first. Use **‹ Prev / Next ›** at the top (or the ← → keys) to step through the stops in order. Use **Lifers only**, **★ Starred only**, the likelihood filter or the search box to narrow the list.
 - **Party tab:** tick who's on this trip (saved with the trip). Star (☆) one person to put their lifers first, and click the star again to plan for everyone.
   - **No one starred:** a bird counts as a lifer if it's new for anyone, and birds new for more of the party rank higher.
   - **One person starred:** their lifers count most, and lifers for the others only break ties.
@@ -53,7 +53,7 @@ The Settings window opens by itself the first time.
   - Hotspots appear as lettered markers (A, B, C…) on the map. Click one for eBird and Google Maps directions links.
   - How it works: it looks at the 10 hotspots with the most species within your distance, reads each one's all-time eBird species list, and weights each bird by how likely it is around your date. That's about 10 eBird requests the first time, saved for 30 days. Trips saved with the old 25 km distance now use 20 km, so click **Find best hotspots** again for those stops.
 - **Map style:** use the layers button at the top right of the map to switch between **Street**, **Satellite** (Esri imagery with place names) and **Terrain** (OpenTopoMap, with contour lines). Your choice is remembered.
-- **Trip tab:** every species across all stops, its best chance, and numbered chips showing which stops have it (gold = best). Click a chip to jump to that stop.
+- **Trip List tab:** every species across all stops, its best chance, and numbered chips showing which stops have it (gold = best). Click a chip to jump to that stop.
 - **Save:** **Save** (or Ctrl+S) names and saves the trip, and **My trips** reopens or deletes saved trips. **Export trip file** / **Import trip file** make a backup copy or move a trip to another computer.
 
 ## How "likely" is worked out

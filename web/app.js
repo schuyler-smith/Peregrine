@@ -625,7 +625,7 @@ function renderStops() {
       : (i === 0 ? "trip start" : d ? "day after previous" : "");
     return `
     <li class="stop-row ${s.id === state.selected ? "sel" : ""}" data-id="${s.id}">
-      <span class="num" title="Drag to reorder">${i + 1}</span>
+      <span class="num">${i + 1}</span>
       <div>
         <input class="stop-name" value="${esc(s.name)}" aria-label="Stop name">
         <div class="stop-sub">
@@ -660,14 +660,19 @@ function updateStopStatuses() {
   }
 }
 
-/* Drag a stop's number to move it. Pointer events, so it works with a mouse or a finger. */
+/* Drag a stop card to move it: anywhere on the card except its fields, buttons and links.
+   A press without moving is still a click (opens the stop). On a touch screen a finger on
+   the card scrolls the list, so there you drag by the stop's number. */
 let stopDrag = null, justDragged = false;
 $("#stops").addEventListener("pointerdown", (e) => {
-  const handle = e.target.closest(".stop-row .num");
-  if (!handle || e.button !== 0 || state.trip.stops.length < 2) return;
+  const row = e.target.closest(".stop-row");
+  if (!row || e.button !== 0 || state.trip.stops.length < 2) return;
+  const onNum = !!e.target.closest(".num");
+  if (e.pointerType === "touch" && !onNum) return;
+  if (!onNum && e.target.closest("input, button, a, select, textarea, label")) return;
   e.preventDefault();
-  handle.setPointerCapture(e.pointerId);
-  stopDrag = { row: handle.closest(".stop-row"), startY: e.clientY, moved: false, scroll: 0, timer: null };
+  row.setPointerCapture(e.pointerId);
+  stopDrag = { row, startY: e.clientY, moved: false, scroll: 0, timer: null };
 });
 $("#stops").addEventListener("pointermove", (e) => {
   const d = stopDrag;
