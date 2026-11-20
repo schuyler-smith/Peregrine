@@ -95,14 +95,15 @@ def answer(path, query):
 
 
 def drive(src, dests):
-    """Made-up OSRM table answer: road distance about 1.3x straight-line, at 55 km/h."""
+    """Made-up OSRM table answer: road distance about 1.3x straight-line (5x for the ~20%
+    of places behind a "mountain"), at 55 km/h."""
     import math
     def km(a, b):
         r = math.pi / 180
         h = math.sin((b[0] - a[0]) * r / 2) ** 2 + math.cos(a[0] * r) * math.cos(b[0] * r) * math.sin((b[1] - a[1]) * r / 2) ** 2
         return 2 * 6371 * math.asin(math.sqrt(h))
     pts = [src] + list(dests)
-    dist = [km(src, p) * 1300 for p in pts]
+    dist = [km(src, p) * (5000 if _h(p, "mountain") < 0.2 else 1300) for p in pts]
     return {"code": "Ok", "durations": [[d / 1000 / 55 * 3600 for d in dist]], "distances": [dist],
             "sources": [{"distance": 5.0}],
             "destinations": [{"distance": 900.0 if _h(p, "snap") < 0.15 else 20.0} for p in pts]}

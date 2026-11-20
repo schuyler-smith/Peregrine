@@ -12,7 +12,7 @@
 - Tick **★ Lifers only**. The list shrinks to just the targets, most likely first, each with a likelihood bar.
 - Tap ☆ on two or three target birds, then click **Find best hotspots**. Each hotspot is ranked on its own, with its driving time. Click **▸ Show what's been reported here** to see "X of Y days with checklists" for each bird.
 - Switch to **Best combination** with 2 hotspots: B now shows what it adds on top of A. Switch to 3 to show it re-plan instantly.
-- With two life lists loaded, change **Prioritize** from Everyone to one person and watch the counts and the ranking change.
+- With two life lists loaded, open the **Party** tab and star one person. Watch the counts and the hotspot ranking change.
 - Flip the map to **Satellite** with the layers button.
 
 ## 3 · The whole trip at a glance (40 sec)

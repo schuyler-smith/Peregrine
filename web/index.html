@@ -33,6 +33,7 @@
       <button data-tab="trip" class="active">Itinerary</button>
       <button data-tab="stop">Stop</button>
       <button data-tab="whole">Trip</button>
+      <button data-tab="party">Party</button>
     </nav>
 
     <section id="tab-trip" class="tab-body">
@@ -73,7 +74,6 @@
         <button id="btnImport" class="ghost small">Import trip file</button>
         <input id="importFile" type="file" accept=".json,application/json" hidden>
       </div>
-      <div id="party" class="party"></div>
     </section>
 
     <div id="filters" class="filters" hidden>
@@ -95,6 +95,7 @@
 
     <section id="tab-stop" class="tab-body" hidden></section>
     <section id="tab-whole" class="tab-body" hidden></section>
+    <section id="tab-party" class="tab-body" hidden><div id="party" class="party"></div></section>
   </aside>
 </main>
 

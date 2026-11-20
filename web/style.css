@@ -245,12 +245,16 @@ input:focus, select:focus { outline: 2px solid rgba(61,90,58,.25); border-color:
 .file-btn.primary:hover { background: #33502f; }
 .file-btn.ghost:hover { background: #f0ebdd; }
 .file-btn:focus-within { outline: 2px solid rgba(61,90,58,.35); }
-.party { margin-top: 14px; }
-.party-people { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-.party-people .check { margin-top: 2px; }
-.party-people .fine { margin: 0; }
-.prio { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-top: 8px; }
-.party .fine { margin-top: 4px; }
+.party-h { font-family: var(--serif); font-size: 21px; margin: 0 0 4px; font-weight: 600; }
+.party-list { list-style: none; margin: 8px 0; padding: 0; }
+.party-list li { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 7px; background: #fff; }
+.party-list li:not(.on) { opacity: .65; }
+.party-list li.prio { border-color: var(--gold); background: linear-gradient(90deg, #fbe7b4, #fff 70%); }
+.party-who { display: flex; align-items: center; gap: 8px; flex: 1; cursor: pointer; font-size: 14.5px; }
+.party-list .fine { margin: 0; }
+.party-list .star-btn { font-size: 22px; padding: 0 2px; }
+.party-list .star-btn[disabled] { opacity: .3; cursor: default; }
+.party-mode { font-size: 13px; background: var(--gold-bg); border: 1px solid #ecd59c; border-radius: 8px; padding: 8px 10px; }
 .per-person { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
 .per-person b { color: var(--gold); }
 .lifer-tag.other { background: #f3ead2; color: #8a7a4f; font-weight: 600; }
@@ -278,3 +282,8 @@ input:focus, select:focus { outline: 2px solid rgba(61,90,58,.25); border-color:
 .hd-n { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); font-size: 12px; }
 .hd-list .bar i { background: var(--olive); }
 .hd-name .star-btn { font-size: 14px; }
+.hs-long { font-size: 12.5px; color: #8a5a14; margin-top: 2px; }
+.hs-maybe { margin: 6px 0; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 6px; opacity: .8; }
+.hs-maybe .fine { margin: 0 0 4px; }
+.hs-maybe ul { margin: 0; padding-left: 18px; font-size: 13px; }
+.hs-maybe a { color: var(--ink); }

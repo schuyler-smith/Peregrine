@@ -35,13 +35,16 @@ The Settings window opens by itself the first time.
 - **Find birds (you decide when):** adding, moving or re-dating stops never contacts eBird on its own. Each stop has a **🔍 Find birds** button, and **Find birds for all stops** is at the top of the list, showing roughly how many eBird requests it will use. If you change a stop's date, the window or its location afterwards, the stop shows **↻ Update** and keeps its old results (marked as out of date) until you click it. Results and hotspot plans are saved with the trip, so reopening a trip needs no new requests.
 - **Dates:** set the **Start date** at the top of the Itinerary tab (if you click Find birds without one, it asks). Stop 1 is on the start date and **each stop after it is the next day** (shown as Day 1, Day 2…). Change any stop's date and the stops after it follow on from it. **↺ auto** puts a stop back to "day after the previous one." Set the same date on two stops to visit both in one day. Reordering stops re-dates them. The window (±3, 5, 7, 10 or 15 days) sets how wide a slice of the calendar is sampled.
 - **Stop tab:** click a pin or a stop to see its birds, most likely first. Use **‹ Prev / Next ›** at the top (or the ← → keys) to step through the stops in order. Use **Lifers only**, **★ Starred only**, the likelihood filter or the search box to narrow the list.
-- **Birding party:** under the stops in the Itinerary tab, tick who's on this trip (saved with the trip). With two or more people, **Prioritize** chooses whose lifers count:
-  - **Everyone:** a bird counts as a lifer if it's new for anyone, and birds that are new for more of the party rank higher.
-  - **One person:** their lifers count most, and lifers for the others only break ties.
+- **Party tab:** tick who's on this trip (saved with the trip). Star (☆) one person to put their lifers first, and click the star again to plan for everyone.
+  - **No one starred:** a bird counts as a lifer if it's new for anyone, and birds new for more of the party rank higher.
+  - **One person starred:** their lifers count most, and lifers for the others only break ties.
 
-  The same choice is in the filter bar (next to **Lifers only**). Bird rows say who each lifer is for, and the stop and trip totals show a count per person.
+  The same choice is in the filter bar next to **Lifers only**. Bird rows say who each lifer is for, and the stop and trip totals show a count per person.
 - **Star your targets:** tap **☆** next to any bird to star it for this trip (★). Stars are saved with the trip and show in every list.
-- **Best hotspots:** on a stop, choose how far you'll go (1, 5, 10, 20 or 50 km; 10 km to start), then click **Find best hotspots**. Only hotspots inside that distance (straight line from the pin) are used.
+- **Best hotspots:** on a stop, choose how far you'll go, then click **Find best hotspots**. Pick either:
+  - **a distance** (1, 5, 10, 20 or 50 km; 10 km to start), measured in a straight line from the pin, or
+  - **a drive time** (15, 30, 45, 60 or 90 min). It finds hotspots within the straight-line distance that drive could cover (up to 50 km), gets driving times to the 25 with the most species in one routing request, and keeps only those that fit. A hotspot that's close but behind a mountain or across a lake drops out. Hotspots left out only because no mapped road reaches them are listed separately as "maybe closer than they look". If the routing service is down, it falls back to straight-line distance and says so.
+  - Either way, a hotspot whose road route is more than 3× its straight-line distance shows **⚠ Long way round** and ranks a little lower in **Best birds**.
   - **Each on its own** (the default) ranks every hotspot by the birds on its own list: starred birds first, then lifers. Sort by **Best birds** or **Shortest drive**.
   - **Best combination** picks the set of hotspots (1–5, your choice) that together cover the most, in the order that adds the most first. B shows what it adds on top of A, and so on. It also names any starred bird the set misses.
   - With two or more people in the party, each hotspot shows lifers per person.

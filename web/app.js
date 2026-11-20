@@ -750,7 +750,7 @@ function tiersHTML(list) {
 function lifeNudge() {
   if (lifeOn()) return "";
   return state.lists.length
-    ? `<div class="nudge">Nobody with a life list is ticked in this trip's birding party, so lifers aren't shown. Pick the party in the Itinerary tab.</div>`
+    ? `<div class="nudge">Nobody with a life list is ticked in this trip's birding party, so lifers aren't shown. Pick who's coming in the Party tab.</div>`
     : `<div class="nudge">Import your eBird life list to see which of these would be lifers. <a data-open-settings>Open Settings</a></div>`;
 }
 
@@ -855,7 +855,7 @@ function renderWholeTab() {
   el.innerHTML = html;
 }
 
-/* The birding party (Itinerary tab) and the "lifers for" picker (filter bar). */
+/* The birding party (Party tab) and the "lifers for" picker (filter bar). */
 let partyKey = "";
 function renderParty() {
   const key = lifeKey();
@@ -867,13 +867,26 @@ function renderParty() {
   const whoOpts = `<option value="all" ${pl ? "" : "selected"}>Everyone</option>` +
     party.map((l) => `<option value="${esc(l.id)}" ${pl && pl.id === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("");
   if (!state.lists.length) {
-    box.innerHTML = `<p class="life-status">No life lists yet. <a data-open-settings>Import them in Settings</a> to see possible lifers for you and anyone you bird with.</p>`;
+    box.innerHTML = `<h2 class="party-h">Birding party</h2>
+      <div class="empty">No life lists yet. <a data-open-settings>Import them in Settings</a>, one for each person you bird with, then pick who's on this trip here.</div>`;
   } else {
-    box.innerHTML = `<h3 class="section-h">Birding party</h3>
-      <div class="party-people">${state.lists.map((l) => `<label class="check"><input type="checkbox" data-party="${esc(l.id)}" ${party.includes(l) ? "checked" : ""}> ${esc(l.name)} <span class="fine">${l.count} species</span></label>`).join("")}</div>
-      ${party.length > 1 ? `<label class="prio">Prioritize <select data-priority>${whoOpts}</select></label>
-      <p class="fine">“Everyone” ranks birds that are lifers for more of the party higher. Picking one person makes their lifers count most; lifers for the others only break ties.</p>` : ""}
-      <p class="life-status"><a data-open-settings>Manage life lists</a></p>`;
+    box.innerHTML = `<h2 class="party-h">Birding party</h2>
+      <p class="fine">Tick who's on this trip. Star (☆) one person to put their lifers first, or leave everyone unstarred to plan for the whole party. Saved with the trip.</p>
+      <ul class="party-list">${state.lists.map((l) => {
+        const on = party.includes(l);
+        const star = pl && pl.id === l.id;
+        return `<li class="${on ? "on" : ""} ${star ? "prio" : ""}">
+          <label class="party-who"><input type="checkbox" data-party="${esc(l.id)}" ${on ? "checked" : ""}> <b>${esc(l.name)}</b></label>
+          <span class="fine">${l.count} species</span>
+          <button type="button" class="star-btn ${star ? "on" : ""}" data-prio="${esc(l.id)}" ${on ? "" : "disabled"}
+            title="${!on ? "Add them to the party first" : star ? "Stop prioritizing (plan for everyone)" : `Prioritize ${esc(l.name)}'s lifers`}" aria-pressed="${star}">${star ? "★" : "☆"}</button>
+        </li>`;
+      }).join("")}</ul>
+      <p class="party-mode">${!party.length ? "Nobody is ticked, so lifers aren't shown."
+        : pl ? `<b>★ ${esc(pl.name)}</b> is prioritized: their lifers count most, and lifers for the others only break ties.`
+        : party.length > 1 ? "<b>Planning for everyone:</b> a bird counts as a lifer if it's new for anyone, and birds new for more of the party rank higher."
+        : `Planning for <b>${esc(party[0].name)}</b>.`}</p>
+      <p class="life-status"><a data-open-settings>Add or manage life lists</a></p>`;
   }
   const f = $("#fWho");
   f.innerHTML = whoOpts;
@@ -895,7 +908,11 @@ function setPriority(v) {
 }
 document.addEventListener("change", (e) => {
   if (e.target.matches("[data-party]")) setParty($$("[data-party]").filter((c) => c.checked).map((c) => c.dataset.party));
-  if (e.target.matches("[data-priority], #fWho")) setPriority(e.target.value);
+  if (e.target.matches("#fWho")) setPriority(e.target.value);
+});
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-prio]");
+  if (b && !b.disabled) setPriority(state.trip.priority === b.dataset.prio ? "all" : b.dataset.prio);
 });
 
 // ------------------------------------------------------------------ render loop
@@ -914,7 +931,7 @@ function render() {
     if (state.tab === "stop") {
       const r = state.results.get(state.selected);
       const selStop = stopById(state.selected);
-      const key = common + "|" + state.selected + "|" + (selStop ? stopSig(selStop) : "") + "|" + (r ? r.status + r.done + r.total + r.sig + (r.note || "") : "none") + "|" + JSON.stringify(selStop?.hotspots) + selStop?.hsRadius + Array.from(hsOpen).join(",");
+      const key = common + "|" + state.selected + "|" + (selStop ? stopSig(selStop) : "") + "|" + (r ? r.status + r.done + r.total + r.sig + (r.note || "") : "none") + "|" + JSON.stringify(selStop?.hotspots) + selStop?.hsRadius + "|" + selStop?.hsMinutes + Array.from(hsOpen).join(",");
       if (key !== lastKeys.stop) { lastKeys.stop = key; renderStopTab(); }
     }
     if (state.tab === "whole") {
@@ -931,7 +948,8 @@ function setTab(tab) {
   $("#tab-trip").hidden = tab !== "trip";
   $("#tab-stop").hidden = tab !== "stop";
   $("#tab-whole").hidden = tab !== "whole";
-  $("#filters").hidden = tab === "trip";
+  $("#tab-party").hidden = tab !== "party";
+  $("#filters").hidden = tab === "trip" || tab === "party";
   lastKeys.stop = lastKeys.whole = "";
   render();
 }
@@ -961,12 +979,14 @@ $("#fLifers").addEventListener("change", (e) => { state.filters.lifers = e.targe
 $("#fStarred").addEventListener("change", (e) => { state.filters.starred = e.target.checked; render(); });
 document.addEventListener("change", (e) => {
   const c = e.target.closest("[data-hs-count]");
-  const rad = e.target.closest("[data-hs-radius]");
-  const st = stopById((c || rad)?.dataset.hsCount || (c || rad)?.dataset.hsRadius);
+  const lim = e.target.closest("[data-hs-limit]");
+  const st = stopById(c?.dataset.hsCount || lim?.dataset.hsLimit);
   if (!st) return;
   if (c) st.hotspots = +c.value;
-  if (rad) {
-    st.hsRadius = +rad.value;
+  if (lim) {
+    const [kind, v] = lim.value.split(":");
+    if (kind === "min") st.hsMinutes = +v;
+    else { st.hsMinutes = null; st.hsRadius = +v; }
   }
   hsVersion++;
   markDirty();
@@ -1050,6 +1070,17 @@ $("#searchForm").addEventListener("submit", async (e) => {
 
 /* Hotspot search distances. Trips saved with the old 25 km choice become 20 km. */
 const RADII = [1, 5, 10, 20, 50], DEFAULT_RADIUS = 10;
+/* Or a drive-time limit: hotspots are searched within a straight-line distance that a
+   drive of that long could reach, then kept only if the road route fits the time. */
+const DRIVE_MINS = [15, 30, 45, 60, 90];
+function limitOf(stop) {
+  const m = DRIVE_MINS.includes(+stop.hsMinutes) ? +stop.hsMinutes : null;
+  return m ? { min: m, km: Math.min(50, Math.max(5, Math.ceil(m * 0.9))) } : { min: null, km: radiusOf(stop.hsRadius) };
+}
+function limitText(stop) {
+  const l = limitOf(stop);
+  return l.min ? `a ${l.min} min drive` : `${l.km} km`;
+}
 function radiusOf(v) {
   v = +v;
   if (RADII.includes(v)) return v;
@@ -1073,6 +1104,7 @@ function loadTrip(trip, { clean = true } = {}) {
       region: s.region || null, regionFor: s.regionFor, nameEdited: !!s.nameEdited,
       hotspots: [1, 2, 3, 4, 5].includes(+s.hotspots) ? +s.hotspots : 2,
       hsRadius: radiusOf(s.hsRadius),
+      hsMinutes: DRIVE_MINS.includes(+s.hsMinutes) ? +s.hsMinutes : null,
       result: s.result && s.result.sig && s.result.data ? s.result : null,
       hsCache: s.hsCache && s.hsCache.key && Array.isArray(s.hsCache.candidates) ? s.hsCache : null,
     })),
@@ -1085,7 +1117,8 @@ function loadTrip(trip, { clean = true } = {}) {
     if (st.result) state.results.set(st.id, { sig: st.result.sig, status: "done", data: st.result.data });
     if (st.hsCache) {
       for (const c of st.hsCache.candidates) hsLists.set(c.locId, new Set(c.codes || []));
-      hsState.set(st.id, { key: st.hsCache.key, status: "done", candidates: st.hsCache.candidates.map(({ codes, ...c }) => c) });
+      hsState.set(st.id, { key: st.hsCache.key, status: "done", candidates: st.hsCache.candidates.map(({ codes, ...c }) => c),
+        maybe: Array.isArray(st.hsCache.maybe) ? st.hsCache.maybe : [], note: st.hsCache.note || "" });
     }
   }
   state.selected = state.trip.stops[0]?.id || null;
@@ -1398,24 +1431,48 @@ const hsOpen = new Set();   // "stopId|locId" rows that show their birds
 const hsDays = new Map();   // daysKey -> what each hotspot reported around the dates
 const driveTried = new Set();
 
-function hsKey(stop) { return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${radiusOf(stop.hsRadius)}`; }
+function hsKey(stop) {
+  const l = limitOf(stop);
+  return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${l.min ? l.min + "min" : l.km}`;
+}
+const DRIVE_POOL = 25;       // most places one routing request can take
+const LONG_WAY = 3;          // road km more than this times the straight-line km...
+const LONG_WAY_FACTOR = 0.8; // ...ranks a hotspot a little lower in "Best birds"
 
 async function runHotspots(stop) {
   const key = hsKey(stop);
-  const st = { key, status: "loading", done: 0, total: 0, candidates: [], error: null };
+  const st = { key, status: "loading", done: 0, total: 0, candidates: [], maybe: [], note: "", error: null };
   hsState.set(stop.id, st);
   hsVersion++;
   render();
   const stale = () => hsState.get(stop.id) !== st;
   try {
-    const radius = radiusOf(stop.hsRadius);
+    const lim = limitOf(stop);
+    const radius = lim.km;
     const hs = await limiter(() => api(`/api/ebird/ref/hotspot/geo?lat=${stop.lat.toFixed(4)}&lng=${stop.lng.toFixed(4)}&dist=${radius}&fmt=json`));
     if (stale()) return;
-    const cands = (Array.isArray(hs) ? hs : [])
+    let near = (Array.isArray(hs) ? hs : [])
       .map((h) => ({ locId: h.locId, name: h.locName, lat: h.lat, lng: h.lng, n: h.numSpeciesAllTime || 0, dist: haversineKm(stop, h) }))
       .filter((h) => h.locId && h.dist <= radius)   // exactly within the distance chosen
-      .sort((a, b) => b.n - a.n || a.dist - b.dist)
-      .slice(0, MAX_CANDIDATES);
+      .sort((a, b) => b.n - a.n || a.dist - b.dist);
+    if (lim.min && near.length) {
+      // Drive-time limit: route to the busiest hotspots first, keep the ones that fit.
+      const pool = near.slice(0, DRIVE_POOL);
+      let r = null;
+      try { r = await driveRequest(stop, pool); } catch (e) { /* fall back to straight-line distance */ }
+      if (stale()) return;
+      if (r) {
+        pool.forEach((c, i) => { c.drive = driveFrom(r, i); });
+        near = pool.filter((c) => c.drive && c.drive.min <= lim.min);
+        // Over the time only because no mapped road reaches them: they may really be closer.
+        st.maybe = pool.filter((c) => c.drive && c.drive.approx && c.drive.min > lim.min)
+          .sort((a, b) => a.dist - b.dist).slice(0, 4);
+        if (!near.length) throw new Error(`No eBird hotspots within ${limitText(stop)} of this stop. Try a longer drive.`);
+      } else {
+        st.note = `Driving times aren't available right now, so this used straight-line distance (up to ${radius} km) instead of ${limitText(stop)}.`;
+      }
+    }
+    const cands = near.slice(0, MAX_CANDIDATES);
     if (!cands.length) throw new Error(`No eBird hotspots within ${radius} km of this stop. Try a bigger distance.`);
     st.total = cands.length;
     await Promise.all(cands.map((c) => limiter(async () => {
@@ -1437,7 +1494,7 @@ async function runHotspots(stop) {
     st.candidates = cands.filter((c) => hsLists.get(c.locId));
     if (!st.candidates.length) throw new Error("Couldn't load the hotspot species lists from eBird. Try again in a few minutes.");
     st.status = "done";
-    stop.hsCache = { key, candidates: st.candidates.map((c) => ({ ...c, codes: Array.from(hsLists.get(c.locId)) })) };
+    stop.hsCache = { key, candidates: st.candidates.map((c) => ({ ...c, codes: Array.from(hsLists.get(c.locId)) })), maybe: st.maybe, note: st.note };
     markDirty();
     fetchDrive(stop);
   } catch (e) {
@@ -1450,6 +1507,20 @@ async function runHotspots(stop) {
 }
 
 /* Driving time from the stop's pin to each hotspot: one request for all of them. */
+function driveRequest(stop, places) {
+  const to = places.map((c) => `${(+c.lat).toFixed(5)},${(+c.lng).toFixed(5)}`).join("|");
+  return api(`/api/drive?from=${stop.lat.toFixed(5)},${stop.lng.toFixed(5)}&to=${encodeURIComponent(to)}`);
+}
+function driveFrom(r, i) {
+  const offRoad = (m) => m != null && m > 500;
+  const d = r.dests[i];
+  return d && d.min != null ? { min: d.min, km: d.km, approx: offRoad(d.snapM) || offRoad(r.srcSnapM) } : null;
+}
+/** Road distance far longer than straight-line: a mountain, lake or river in the way. */
+function longWay(h) {
+  const d = h.drive;
+  return !!(d && d.km != null && h.dist >= 0.5 && d.km > LONG_WAY * h.dist && d.km - h.dist > 5);
+}
 async function fetchDrive(stop) {
   const st = hsState.get(stop.id);
   if (!st || st.status !== "done" || !st.candidates.length) return;
@@ -1461,13 +1532,10 @@ async function fetchDrive(stop) {
   hsVersion++;
   render();
   try {
-    const to = st.candidates.map((c) => `${(+c.lat).toFixed(5)},${(+c.lng).toFixed(5)}`).join("|");
-    const r = await api(`/api/drive?from=${stop.lat.toFixed(5)},${stop.lng.toFixed(5)}&to=${encodeURIComponent(to)}`);
+    const r = await driveRequest(stop, st.candidates);
     if (hsState.get(stop.id) !== st) return;
-    const offRoad = (m) => m != null && m > 500;
     st.candidates.forEach((c, i) => {
-      const d = r.dests[i];
-      c.drive = d && d.min != null ? { min: d.min, km: d.km, approx: offRoad(d.snapM) || offRoad(r.srcSnapM) } : null;
+      c.drive = driveFrom(r, i);
       const saved = stop.hsCache && stop.hsCache.candidates.find((x) => x.locId === c.locId);
       if (saved) saved.drive = c.drive;
     });
@@ -1555,7 +1623,8 @@ function planHotspots(stop, data) {
       const adds = [];
       for (const code of listOf(c)) if (byCode.has(code)) { adds.push(byCode.get(code)); covered.add(code); }
       adds.sort((a, b) => birdValue(b) - birdValue(a));
-      return { hotspot: c, adds, score: adds.reduce((a, b) => a + value.get(b.code), 0) };
+      const score = adds.reduce((a, b) => a + value.get(b.code), 0) * (longWay(c) ? LONG_WAY_FACTOR : 1);
+      return { hotspot: c, adds, score };
     });
     if (prefs.hsSort === "drive") steps.sort((a, b) => driveMin(a.hotspot) - driveMin(b.hotspot) || a.hotspot.dist - b.hotspot.dist);
     else steps.sort((a, b) => b.score - a.score || a.hotspot.dist - b.hotspot.dist);
@@ -1665,12 +1734,16 @@ function hotspotBoxHTML(stop, data) {
   const st = hsState.get(stop.id);
   const fresh = st && st.key === hsKey(stop);
   const radius = radiusOf(stop.hsRadius);
+  const lim = limitOf(stop);
+  const limVal = lim.min ? `min:${lim.min}` : `km:${radius}`;
+  const limOpts = `<optgroup label="Distance">${RADII.map((v) => `<option value="km:${v}" ${limVal === "km:" + v ? "selected" : ""}>${v} km</option>`).join("")}</optgroup>` +
+    `<optgroup label="Drive time">${DRIVE_MINS.map((m) => `<option value="min:${m}" ${limVal === "min:" + m ? "selected" : ""}>${m} min drive</option>`).join("")}</optgroup>`;
   const opts = (vals, cur, fmt) => vals.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${fmt(v)}</option>`).join("");
   const combined = prefs.hsMode === "combined";
   let html = `<div class="hs-box">
     <div class="hs-head">
       <b>Best hotspots</b>
-      <span>within <select data-hs-radius="${stop.id}">${opts(RADII, radius, (v) => v + " km")}</select></span>
+      <span>within <select data-hs-limit="${stop.id}" title="Straight-line distance, or how long the drive is">${limOpts}</select></span>
       ${fresh && st.status !== "error" ? "" : `<button class="primary small" data-hs-run="${stop.id}">Find best hotspots</button>`}
     </div>
     <div class="hs-modes">
@@ -1683,7 +1756,7 @@ function hotspotBoxHTML(stop, data) {
     </div>`;
   if (!fresh) {
     const nStar = data.species.filter(isStarred).length;
-    html += `<p class="fine">Ranks the eBird hotspots within ${radius} km by the ${lifeOn() ? `lifers${liferWho()}` : "species"} on their lists${nStar ? `, with your <b>${nStar} starred</b> bird${nStar === 1 ? "" : "s"} first` : ". Star (☆) the birds you want most and they'll count first"}, and shows the driving time to each. Uses about ${MAX_CANDIDATES} eBird requests the first time, saved for 30 days.</p>`;
+    html += `<p class="fine">Ranks the eBird hotspots within ${limitText(stop)} by the ${lifeOn() ? `lifers${liferWho()}` : "species"} on their lists${nStar ? `, with your <b>${nStar} starred</b> bird${nStar === 1 ? "" : "s"} first` : ". Star (☆) the birds you want most and they'll count first"}, and shows the driving time to each. Uses about ${MAX_CANDIDATES} eBird requests the first time, saved for 30 days.</p>`;
   } else if (st.status === "loading") {
     html += `<p class="fine">Reading hotspot species lists… ${st.done}/${st.total || "?"}</p>`;
   } else if (st.status === "error") {
@@ -1696,12 +1769,21 @@ function hotspotBoxHTML(stop, data) {
     if (lifeOn()) parts.push(`<b>${plan.liferCovered} of ${plan.liferTotal}</b> possible lifers${liferWho()}`);
     else parts.push(`<b>${plan.covered.size} of ${plan.speciesTotal}</b> species`);
     html += combined
-      ? `<p class="hs-sum">These ${plan.steps.length} together cover ${parts.join(" and ")} at this stop.</p>`
-      : `<p class="hs-sum">${plan.steps.length} hotspot${plan.steps.length === 1 ? "" : "s"} within ${radius} km, each judged on its own list, ${prefs.hsSort === "drive" ? "nearest drive first" : "best first"}. Between them they have ${parts.join(" and ")} at this stop.</p>`;
+      ? `<p class="hs-sum">${plan.steps.length === 1 ? "This hotspot covers" : `These ${plan.steps.length} together cover`} ${parts.join(" and ")} at this stop.</p>`
+      : `<p class="hs-sum">${plan.steps.length} hotspot${plan.steps.length === 1 ? "" : "s"} within ${limitText(stop)}, each judged on its own list, ${prefs.hsSort === "drive" ? "nearest drive first" : "best first"}. Between them they have ${parts.join(" and ")} at this stop.</p>`;
+    if (st.note) html += `<p class="fine">${esc(st.note)}</p>`;
     if (st.driveStatus === "loading") html += `<p class="fine">Working out driving times…</p>`;
     if (st.driveStatus === "error") html += `<p class="fine">Driving times aren't available right now (${esc(st.driveError)}). Straight-line distances are shown instead.</p>`;
     html += `<ol class="hs-list">`;
     const party = partyLists();
+    // Which past dates "what's been reported" looks at: the trip's dates in the latest year already over.
+    const lookRange = (() => {
+      const date = stopDate(stop);
+      if (!date) return "around your dates";
+      const n = state.trip.window, y = windowYear(date, n), base = parseISO(date);
+      const c = new Date(y, base.getMonth(), base.getDate());
+      return `${niceDate(iso(addDays(c, -n)))} – ${niceDate(iso(addDays(c, n)))}, ${y}`;
+    })();
     plan.steps.forEach((step, i) => {
       const h = step.hotspot;
       const starAdds = step.adds.filter(isStarred);
@@ -1718,15 +1800,19 @@ function hotspotBoxHTML(stop, data) {
       html += `<li><span class="hs-letter">${LETTERS[i]}</span><div>
         <a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener"><b>${esc(h.name)}</b></a>
         <span class="fine">${h.dist.toFixed(1)} km away${driveHTML(h)} · ${h.n} species all-time</span>
+        ${longWay(h) ? `<div class="hs-long" title="Ranked a little lower in Best birds">⚠ Long way round: ${h.drive.km} km by road to get ${h.dist.toFixed(1)} km away${h.drive.approx ? ". No mapped road reaches it, so it may be closer than this" : ""}.</div>` : ""}
         <div class="hs-adds">${verb}${bits.join(" · ") || "nothing new"}</div>${who}
-        <button type="button" class="link-btn" data-hs-open="${esc(openKey)}" aria-expanded="${open}">${open ? "▾ Hide" : "▸ Show"} what's been reported here around your dates</button>
+        <button type="button" class="link-btn" data-hs-open="${esc(openKey)}" aria-expanded="${open}">${open ? "▾ Hide" : "▸ Show"} what's been reported here ${lookRange}</button>
         ${open ? hsDaysHTML(stop, h) : ""}</div></li>`;
     });
     html += `</ol>`;
-    if (plan.missedStarred.length) {
-      html += `<p class="hs-miss">Not covered: ${plan.missedStarred.map((m) => `★ ${esc(m.bird.com)}${m.elsewhere.length ? ` (reported at ${esc(m.elsewhere[0])}${m.elsewhere.length > 1 ? ` and ${m.elsewhere.length - 1} more` : ""}; try visiting more hotspots)` : ` (not on any hotspot list within ${radius} km)`}`).join("; ")}.</p>`;
+    if (lim.min && st.maybe && st.maybe.length) {
+      html += `<div class="hs-maybe"><p class="fine">Left out, but maybe closer than they look: these are within ${lim.km} km and over ${lim.min} min only by the nearest mapped road, which doesn't reach them. A track or trail missing from the map may get you there faster.</p><ul>${st.maybe.map((h) => `<li><a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener">${esc(h.name)}</a> <span class="fine">${h.dist.toFixed(1)} km away${driveHTML(h)} · ${h.n} species all-time</span></li>`).join("")}</ul></div>`;
     }
-    html += `<p class="fine">From the ${plan.candidates} hotspots with the most species within ${radius} km, using each hotspot's all-time eBird list weighted by how likely each bird is around your date. Starred birds count most, then lifers${party.length > 1 ? (priorityList() ? ` (${esc(priorityList().name)}'s first)` : " (birds that are lifers for more of the party count more)") : ""}.${combined ? "" : " Switch to <b>Best combination</b> to plan several hotspots together."}</p>`;
+    if (plan.missedStarred.length) {
+      html += `<p class="hs-miss">Not covered: ${plan.missedStarred.map((m) => `★ ${esc(m.bird.com)}${m.elsewhere.length ? ` (reported at ${esc(m.elsewhere[0])}${m.elsewhere.length > 1 ? ` and ${m.elsewhere.length - 1} more` : ""}; try visiting more hotspots)` : ` (not on any hotspot list within ${limitText(stop)})`}`).join("; ")}.</p>`;
+    }
+    html += `<p class="fine">From the ${plan.candidates} hotspots with the most species within ${limitText(stop)}, using each hotspot's all-time eBird list weighted by how likely each bird is around your date. Starred birds count most, then lifers${party.length > 1 ? (priorityList() ? ` (${esc(priorityList().name)}'s first)` : " (birds that are lifers for more of the party count more)") : ""}.${combined ? "" : " Switch to <b>Best combination</b> to plan several hotspots together."}</p>`;
   }
   return html + `</div>`;
 }
