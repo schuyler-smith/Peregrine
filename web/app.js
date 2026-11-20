@@ -610,6 +610,7 @@ function stopStatusHTML(stop) {
 }
 
 function renderStops() {
+  if (stopDrag) return; // redrawn when the drag ends
   const ol = $("#stops");
   if (!state.trip.stops.length) {
     ol.innerHTML = `<li class="empty">No stops yet. Search for a place, click the map, or <a class="import-link" data-import>import a whole route</a>.</li>`;
@@ -624,7 +625,7 @@ function renderStops() {
       : (i === 0 ? "trip start" : d ? "day after previous" : "");
     return `
     <li class="stop-row ${s.id === state.selected ? "sel" : ""}" data-id="${s.id}">
-      <span class="num">${i + 1}</span>
+      <span class="num" title="Drag to reorder">${i + 1}</span>
       <div>
         <input class="stop-name" value="${esc(s.name)}" aria-label="Stop name">
         <div class="stop-sub">
@@ -659,7 +660,53 @@ function updateStopStatuses() {
   }
 }
 
+/* Drag a stop's number to move it. Pointer events, so it works with a mouse or a finger. */
+let stopDrag = null, justDragged = false;
+$("#stops").addEventListener("pointerdown", (e) => {
+  const handle = e.target.closest(".stop-row .num");
+  if (!handle || e.button !== 0 || state.trip.stops.length < 2) return;
+  e.preventDefault();
+  handle.setPointerCapture(e.pointerId);
+  stopDrag = { row: handle.closest(".stop-row"), startY: e.clientY, moved: false, scroll: 0, timer: null };
+});
+$("#stops").addEventListener("pointermove", (e) => {
+  const d = stopDrag;
+  if (!d) return;
+  if (!d.moved && Math.abs(e.clientY - d.startY) < 5) return;
+  if (!d.moved) { d.moved = true; d.row.classList.add("dragging"); document.body.classList.add("drag-stops"); }
+  // Put the row before the first other row whose middle is below the pointer.
+  const ol = $("#stops");
+  const others = $$(".stop-row", ol).filter((r) => r !== d.row);
+  const before = others.find((r) => { const b = r.getBoundingClientRect(); return e.clientY < b.top + b.height / 2; });
+  if (before) { if (d.row.nextElementSibling !== before) ol.insertBefore(d.row, before); }
+  else if (ol.lastElementChild !== d.row) ol.appendChild(d.row);
+  // Scroll the panel when dragging near its top or bottom edge.
+  const pane = $("#tab-trip"), pb = pane.getBoundingClientRect();
+  d.scroll = e.clientY < pb.top + 40 ? -12 : e.clientY > pb.bottom - 40 ? 12 : 0;
+  if (d.scroll && !d.timer) d.timer = setInterval(() => { if (stopDrag && stopDrag.scroll) pane.scrollTop += stopDrag.scroll; }, 30);
+});
+function endStopDrag() {
+  const d = stopDrag;
+  if (!d) return;
+  stopDrag = null;
+  clearInterval(d.timer);
+  document.body.classList.remove("drag-stops");
+  d.row.classList.remove("dragging");
+  if (!d.moved) return;
+  justDragged = true;
+  setTimeout(() => { justDragged = false; }, 0);
+  const order = $$("#stops .stop-row").map((r) => r.dataset.id);
+  const before = state.trip.stops.map((s) => s.id).join(",");
+  state.trip.stops.sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id));
+  if (state.trip.stops.map((s) => s.id).join(",") !== before) markDirty();
+  renderStops();
+  render();
+}
+$("#stops").addEventListener("pointerup", endStopDrag);
+$("#stops").addEventListener("pointercancel", endStopDrag);
+
 $("#stops").addEventListener("click", (e) => {
+  if (justDragged) return;
   const row = e.target.closest(".stop-row");
   if (!row) return;
   const id = row.dataset.id;

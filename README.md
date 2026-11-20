@@ -23,7 +23,7 @@ The Settings window opens by itself the first time.
 
 ## Using it
 
-- **Add stops:** search for a place in the Itinerary tab, or **double-click** the map and choose **＋ Add stop here**. Drag a pin to move it, and use ↑ ↓ ✕ to reorder or remove stops.
+- **Add stops:** search for a place in the Itinerary tab, or **double-click** the map and choose **＋ Add stop here**. Drag a pin to move it. To reorder stops, drag a stop's number in the Itinerary list up or down (or use ↑ ↓). ✕ removes a stop.
 - **Import a route:** click **↥ Import a route** in the Itinerary tab, then do one of these:
   - Paste a **Google Maps directions link**: add all your stops in Google Maps, then Share → Copy link.
   - Paste a **list of places**, one per line (names, addresses, or `lat, lng`).

@@ -287,3 +287,9 @@ input:focus, select:focus { outline: 2px solid rgba(61,90,58,.25); border-color:
 .hs-maybe .fine { margin: 0 0 4px; }
 .hs-maybe ul { margin: 0; padding-left: 18px; font-size: 13px; }
 .hs-maybe a { color: var(--ink); }
+
+/* drag to reorder stops */
+.stop-row .num { cursor: grab; touch-action: none; user-select: none; }
+.stop-row .num:hover { box-shadow: 0 0 0 3px rgba(92,122,74,.25); }
+.stop-row.dragging { opacity: .9; border-color: var(--green-2); box-shadow: 0 6px 18px rgba(0,0,0,.18); position: relative; z-index: 2; }
+body.drag-stops, body.drag-stops * { cursor: grabbing !important; user-select: none; }
