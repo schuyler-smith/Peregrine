@@ -26,7 +26,32 @@
 <div id="mockBanner" class="mock-banner" hidden>Sample-data mode: the birds shown are made up for testing, not real eBird data.</div>
 
 <main class="layout">
-  <div id="map"></div>
+  <div class="mainpane">
+    <div class="seg view-switch view-float" role="group" aria-label="Show the map or the trip checklist">
+      <button type="button" data-view="map" class="on">Map</button><button type="button" data-view="checklist">Checklist</button>
+    </div>
+    <div id="map"></div>
+    <section id="checklist" class="checklist" hidden>
+      <div class="ck-bar">
+        <span class="seg view-switch" role="group" aria-label="Show the map or the trip checklist"><button type="button" data-view="map">Map</button><button type="button" data-view="checklist" class="on">Checklist</button></span>
+        <span id="ckTotal" class="ck-total"></span>
+        <input id="ckQ" type="search" placeholder="Find a bird" aria-label="Find a bird in the checklist">
+        <select id="ckShow" aria-label="Which birds to show">
+          <option value="all">All birds</option>
+          <option value="marked">Recorded only</option>
+          <option value="unmarked">Not yet recorded</option>
+        </select>
+        <label class="toggle"><input type="checkbox" id="ckLifers"> Lifers only</label>
+        <span class="ck-add">
+          <input id="ckAdd" placeholder="＋ Add a species…" autocomplete="off" aria-label="Add a species to the checklist">
+          <ul id="ckAddRes" class="ck-add-res" hidden></ul>
+        </span>
+        <button type="button" id="ckCsv" class="ghost small">Export CSV</button>
+      </div>
+      <p class="ck-legend">Click a box to cycle: <b class="m-X">✓</b> seen → <b class="m-H">H</b> heard only → <b class="m-F">F</b> fly-by → <b class="m-G">G</b> guide only → <b class="m-O">O</b> others only → clear. Shift-click goes back. Tap <b class="ck-e on">E</b> to mark a species endemic. Click a column heading to open that stop.</p>
+      <div id="ckWrap" class="ck-wrap"></div>
+    </section>
+  </div>
 
   <aside class="panel">
     <nav class="tabs" role="tablist">

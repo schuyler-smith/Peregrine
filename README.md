@@ -53,6 +53,13 @@ The Settings window opens by itself the first time.
   - Hotspots appear as lettered markers (A, B, C…) on the map. Click one for eBird and Google Maps directions links.
   - How it works: it looks at the 10 hotspots with the most species within your distance, reads each one's all-time eBird species list, and weights each bird by how likely it is around your date. That's about 10 eBird requests the first time, saved for 30 days. Trips saved with the old 25 km distance now use 20 km, so click **Find best hotspots** again for those stops.
 - **Map style:** use the layers button at the top right of the map to switch between **Street**, **Satellite** (Esri imagery with place names) and **Terrain** (OpenTopoMap, with contour lines). Your choice is remembered.
+- **Trip checklist:** use **Map / Checklist** at the top of the map to swap the map for a field checklist of the whole trip. Species run down the side in taxonomic order, grouped by family, with one column per stop (labeled with its day and date).
+  - Click a box to cycle **✓** seen → **H** heard only → **F** fly-by → **G** guide only → **O** others only → clear. Shift-click goes back a step.
+  - Tap **E** next to a species to mark it endemic. eBird doesn't say which birds are endemic, so you set this yourself.
+  - Lifers are tagged with who they're for. The top line counts species you've recorded (✓, H and F; G and O are shown separately), endemics, and new lifers per person.
+  - **＋ Add a species** searches eBird's full species list for birds that weren't predicted. The first search downloads that list, which is then saved for 30 days.
+  - Filter by name, recorded or not yet recorded, or lifers only. Click a column heading to open that stop. **Export CSV** saves it for Excel or Google Sheets.
+  - The checklist is saved with the trip. The taxonomic order comes from eBird in one request the first time you open it.
 - **Trip List tab:** every species across all stops, its best chance, and numbered chips showing which stops have it (gold = best). Click a chip to jump to that stop.
 - **Save:** **Save** (or Ctrl+S) names and saves the trip, and **My trips** reopens or deletes saved trips. **Export trip file** / **Import trip file** make a backup copy or move a trip to another computer.
 

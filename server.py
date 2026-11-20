@@ -695,7 +695,7 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             if path.startswith("/api/ebird/"):
                 sub = path[len("/api/ebird/"):]
-                if ".." in sub or not re.match(r"^(data/obs|ref/hotspot|ref/region|product/spplist)/[A-Za-z0-9/_\-.]*$", sub):
+                if ".." in sub or not re.match(r"^(data/obs|ref/hotspot|ref/region|ref/taxonomy|product/spplist)/[A-Za-z0-9/_\-.]*$", sub):
                     return self.error_json(400, "Not an allowed eBird path.")
                 return self.send_json(ebird_get(sub, q))
             if path == "/api/geocode":

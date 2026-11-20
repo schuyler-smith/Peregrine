@@ -43,13 +43,52 @@ SPECIES = [
 ]
 
 
+FAMILIES = [  # (family, genera) in rough taxonomic order, for the sample checklist
+    ("Ducks, Geese, and Waterfowl", "Branta Cygnus Anas Bucephala Clangula Lophodytes"),
+    ("Grebes", "Podiceps"),
+    ("Herons, Egrets, and Bitterns", "Ardea"),
+    ("Hawks, Eagles, and Kites", "Haliaeetus Buteo"),
+    ("Owls", "Bubo"),
+    ("Woodpeckers", "Melanerpes Dryobates Dryocopus"),
+    ("Shrikes", "Lanius"),
+    ("Jays, Magpies, Crows, and Ravens", "Cyanocitta Corvus"),
+    ("Tits, Chickadees, and Titmice", "Poecile Baeolophus"),
+    ("Kinglets", "Regulus"),
+    ("Waxwings", "Bombycilla"),
+    ("Nuthatches", "Sitta"),
+    ("Treecreepers", "Certhia"),
+    ("Starlings and Mynas", "Sturnus"),
+    ("Finches, Euphonias, and Allies", "Coccothraustes Spinus"),
+    ("Longspurs and Snow Buntings", "Plectrophenax"),
+    ("New World Sparrows", "Spizelloides Junco Zonotrichia"),
+    ("Cardinals and Allies", "Cardinalis"),
+]
+
+
+def _family(sci):
+    genus = sci.split()[0]
+    for i, (fam, genera) in enumerate(FAMILIES):
+        if genus in genera.split():
+            return i, fam
+    return len(FAMILIES), "Other"
+
+
 def _h(*parts):
     return int(hashlib.md5("|".join(map(str, parts)).encode()).hexdigest()[:8], 16) / 0xFFFFFFFF
 
 
 def answer(path, query):
     if path.startswith("ref/taxonomy"):
-        return [{"sciName": s, "speciesCode": c, "comName": n, "category": "species"} for c, n, s, p in SPECIES]
+        want = set(x for x in query.get("species", "").split(",") if x)
+        out = []
+        for i, (c, n, s, p) in enumerate(SPECIES):
+            if want and c not in want:
+                continue
+            fi, fam = _family(s)
+            out.append({"sciName": s, "speciesCode": c, "comName": n, "category": "species",
+                        "taxonOrder": fi * 100 + i, "familyComName": fam})
+        out.sort(key=lambda t: t["taxonOrder"])
+        return out
     if path.startswith("ref/hotspot/geo"):
         lat = float(query.get("lat", 0)); lng = float(query.get("lng", 0))
         county = "US-NY-%03d" % (int(_h(round(lat, 1), round(lng, 1)) * 120) + 1)

@@ -105,7 +105,7 @@ function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(pref
 /* The trip's party is a list of life-list ids (null = everyone who has a list).
    priority is "all" or one list id: whose lifers count most. */
 function blankTrip() {
-  return { id: null, v: 2, name: "", date: "", window: 7, stops: [], stars: [], party: null, priority: "all" };
+  return { id: null, v: 2, name: "", date: "", window: 7, stops: [], stars: [], party: null, priority: "all", checklist: cleanChecklist(null) };
 }
 /* Dates: stop 1 is on the trip's start date; every later stop is the day after the
    stop before it, unless it has its own date, which then restarts the chain. */
@@ -991,6 +991,7 @@ function render() {
       if (key !== lastKeys.whole) { lastKeys.whole = key; renderWholeTab(); }
     }
     renderParty();
+    if (prefs.view === "checklist") renderChecklist();
   });
 }
 
@@ -1148,6 +1149,7 @@ function loadTrip(trip, { clean = true } = {}) {
     stars: Array.isArray(trip.stars) ? trip.stars.filter((x) => typeof x === "string") : [],
     party: Array.isArray(trip.party) ? trip.party.filter((x) => typeof x === "string") : null,
     priority: typeof trip.priority === "string" ? trip.priority : "all",
+    checklist: cleanChecklist(trip.checklist),
     date: parseISO(trip.date) ? trip.date : "",
     window: [3, 5, 7, 10, 15].includes(+trip.window) ? +trip.window : 7,
     stops: (trip.stops || []).filter((s) => isFinite(s.lat) && isFinite(s.lng)).map((s) => ({
@@ -1948,3 +1950,300 @@ function renderFindAll() {
   const html = `<button class="primary" data-find-all>🔍 Find birds for ${label}</button><span class="fine">about ${todo.length * 25} eBird requests, fewer for anything looked up before</span>`;
   if (bar.dataset.html !== html) { bar.innerHTML = html; bar.dataset.html = html; }
 }
+
+// ------------------------------------------------------------------ trip checklist
+/* A field checklist for the trip: species down the side in taxonomic order (grouped by
+   family), one column per stop. Click a box to cycle ✓ → H → F → G → O → clear.
+   Saved with the trip in trip.checklist:
+     marks   {"code|stopId": "X" | "H" | "F" | "G" | "O"}
+     names   {code: {com, sci}}   for every marked bird, so it never drops off the list
+     extra   [{code, com, sci}]   species added by hand
+     endemic [code]               marked endemic by hand
+     tax     {code: [taxonOrder, family]}  from eBird, so reopening needs no requests */
+function cleanChecklist(c) {
+  c = c && typeof c === "object" ? c : {};
+  const ok = { X: 1, H: 1, F: 1, G: 1, O: 1 };
+  const obj = (o) => (o && typeof o === "object" && !Array.isArray(o) ? o : {});
+  return {
+    marks: Object.fromEntries(Object.entries(obj(c.marks)).filter(([, v]) => ok[v])),
+    names: obj(c.names),
+    extra: Array.isArray(c.extra) ? c.extra.filter((x) => x && typeof x.code === "string") : [],
+    endemic: Array.isArray(c.endemic) ? c.endemic.filter((x) => typeof x === "string") : [],
+    tax: obj(c.tax),
+  };
+}
+const MARKS = ["", "X", "H", "F", "G", "O"];
+const MARK_SHOW = { X: "✓", H: "H", F: "F", G: "G", O: "O" };
+const MARK_NAME = { X: "seen", H: "heard only", F: "fly-by", G: "guide only", O: "others only" };
+const YOURS = new Set(["X", "H", "F"]); // what counts toward your own list
+const ck = { q: "", show: "all", lifers: false, version: 0, key: "", taxLoading: false, taxError: "", all: null, allLoading: false };
+
+function ckData() {
+  if (!state.trip.checklist) state.trip.checklist = cleanChecklist(null);
+  return state.trip.checklist;
+}
+
+/** Every bird on the trip: predicted at any stop, added by hand, or already marked. */
+function ckSpecies() {
+  const c = ckData();
+  const by = new Map();
+  for (const stop of state.trip.stops) {
+    const r = state.results.get(stop.id);
+    if (r && r.status === "done" && r.data) for (const s of r.data.species) if (!by.has(s.code)) by.set(s.code, { code: s.code, com: s.com, sci: s.sci });
+  }
+  for (const s of c.extra) if (!by.has(s.code)) by.set(s.code, { code: s.code, com: s.com, sci: s.sci, extra: true });
+  for (const [code, n] of Object.entries(c.names)) if (!by.has(code)) by.set(code, { code, com: n.com, sci: n.sci });
+  return Array.from(by.values());
+}
+
+async function ensureTaxonomy(codes) {
+  const c = ckData();
+  const need = codes.filter((code) => !c.tax[code]);
+  if (!need.length || ck.taxLoading) return;
+  ck.taxLoading = true;
+  ck.taxError = "";
+  ck.version++;
+  render();
+  try {
+    for (let i = 0; i < need.length; i += 100) {
+      const part = need.slice(i, i + 100);
+      const res = await limiter(() => api(`/api/ebird/ref/taxonomy/ebird?fmt=json&species=${encodeURIComponent(part.join(","))}`));
+      for (const t of Array.isArray(res) ? res : []) c.tax[t.speciesCode] = [t.taxonOrder, t.familyComName || ""];
+      for (const code of part) if (!c.tax[code]) c.tax[code] = [1e9, ""]; // not in eBird's taxonomy: list it last
+    }
+    markDirty();
+  } catch (e) {
+    ck.taxError = e.message;
+  }
+  ck.taxLoading = false;
+  ck.version++;
+  render();
+}
+
+function ckMark(code, stopId) { return ckData().marks[code + "|" + stopId] || ""; }
+function ckRowMarks(code) { return state.trip.stops.map((s) => ckMark(code, s.id)).filter(Boolean); }
+function isEndemic(code) { return ckData().endemic.includes(code); }
+
+function ckSorted() {
+  const c = ckData();
+  const tax = (sp) => (c.tax[sp.code] ? c.tax[sp.code][0] : 2e9);
+  return ckSpecies().sort((a, b) => tax(a) - tax(b) || a.com.localeCompare(b.com));
+}
+function ckVisible(sp) {
+  if (ck.lifers && !isLifer(sp)) return false;
+  if (ck.q) {
+    const q = ck.q.toLowerCase();
+    if (!(sp.com || "").toLowerCase().includes(q) && !(sp.sci || "").toLowerCase().includes(q)) return false;
+  }
+  if (ck.show !== "all") {
+    const any = ckRowMarks(sp.code).length > 0;
+    if ((ck.show === "marked") !== any) return false;
+  }
+  return true;
+}
+
+function ckColHead(stop, i) {
+  const day = dayNumber(stop);
+  const d = stopDate(stop);
+  const label = `${day ? `Day ${day}` : `Stop ${i + 1}`}${d ? " · " + niceDate(d) : ""}`;
+  return `<th class="ck-col" data-ck-stop="${esc(stop.id)}" title="${esc(label + " · " + stop.name)}. Click to open this stop.">
+    <div class="ck-vert"><b>${esc(stop.name)}</b><span>${esc(label)}</span></div><div class="ck-n" data-ck-n="${esc(stop.id)}"></div></th>`;
+}
+
+function renderChecklist() {
+  const c = ckData();
+  const stops = state.trip.stops;
+  const key = JSON.stringify([stops.map((s) => [s.id, s.name, stopDate(s), state.results.get(s.id)?.status, state.results.get(s.id)?.sig]),
+    lifeKey(), c.extra.map((x) => x.code), c.endemic, Object.keys(c.tax).length, ck.q, ck.show, ck.lifers, ck.version]);
+  if (key === ck.key) return;
+  ck.key = key;
+  const wrap = $("#ckWrap");
+  const list = ckSorted();
+  if (!stops.length) { wrap.innerHTML = `<div class="empty ck-empty">Add some stops and click <b>Find birds</b>; their birds make up the checklist.</div>`; updateCkTotals(); return; }
+  if (!list.length) { wrap.innerHTML = `<div class="empty ck-empty">No birds yet. Click <b>Find birds</b> for your stops (Itinerary tab), or add species with <b>＋ Add a species</b>.</div>`; updateCkTotals(); return; }
+  const missing = list.filter((sp) => !c.tax[sp.code]).map((sp) => sp.code);
+  if (missing.length && !ck.taxLoading && !ck.taxError) setTimeout(() => ensureTaxonomy(missing));
+  const cols = stops.length + 2;
+  let html = "";
+  if (ck.taxLoading) html += `<p class="fine ck-note">Putting the birds in taxonomic order (from eBird)…</p>`;
+  if (ck.taxError) html += `<p class="fine ck-note">Couldn't get the taxonomic order from eBird (${esc(ck.taxError)}), so some birds are listed A–Z at the end. <a data-ck-tax-retry>Try again</a></p>`;
+  html += `<table class="ck"><thead><tr><th class="ck-sp">Species <span class="fine">(${list.length})</span></th>${stops.map(ckColHead).join("")}<th class="ck-col ck-tot"><div class="ck-vert"><b>Total</b><span>days recorded</span></div></th></tr></thead><tbody>`;
+  let fam = null, shown = 0;
+  for (const sp of list) {
+    if (!ckVisible(sp)) continue;
+    shown++;
+    const t = c.tax[sp.code];
+    const f = t ? (t[1] || "Other") : "Not sorted yet";
+    if (f !== fam) { fam = f; html += `<tr class="ck-fam"><th colspan="${cols}"><span>${esc(f)}</span></th></tr>`; }
+    const end = isEndemic(sp.code);
+    const marks = ckRowMarks(sp.code);
+    html += `<tr class="${isLifer(sp) ? "lifer" : ""}" data-code="${esc(sp.code)}">
+      <th class="ck-sp"><button type="button" class="ck-e ${end ? "on" : ""}" data-ck-end="${esc(sp.code)}" title="${end ? "Endemic (click to unmark)" : "Mark as endemic"}" aria-pressed="${end}">E</button><span class="ck-name" title="${esc(sp.sci)}">${esc(sp.com)}</span>${liferTagHTML(sp)}${sp.extra && !marks.length ? `<button type="button" class="ck-del" data-ck-del="${esc(sp.code)}" title="Remove from the checklist">✕</button>` : ""}</th>
+      ${stops.map((s) => { const m = ckMark(sp.code, s.id); return `<td class="ck-c m-${m || "0"}" data-ck="${esc(sp.code)}|${esc(s.id)}"${m ? ` title="${MARK_NAME[m]}"` : ""}>${m ? MARK_SHOW[m] : ""}</td>`; }).join("")}
+      <td class="ck-t">${marks.length || ""}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  if (!shown) html += `<div class="empty ck-empty">No birds match these filters.</div>`;
+  wrap.innerHTML = html;
+  updateCkTotals();
+}
+
+/** Column counts and the trip totals, updated in place so marking doesn't redraw the table. */
+function updateCkTotals() {
+  const c = ckData();
+  const stops = state.trip.stops;
+  const yours = new Set(), group = new Set();
+  const perStop = new Map(stops.map((s) => [s.id, 0]));
+  for (const [k, m] of Object.entries(c.marks)) {
+    const [code, sid] = k.split("|");
+    if (!perStop.has(sid)) continue;
+    group.add(code);
+    if (YOURS.has(m)) { yours.add(code); perStop.set(sid, perStop.get(sid) + 1); }
+  }
+  for (const [sid, n] of perStop) { const el = $(`[data-ck-n="${sid}"]`); if (el) el.textContent = n || ""; }
+  const sp = ckSpecies();
+  const byCode = new Map(sp.map((s) => [s.code, s]));
+  const party = partyLists();
+  let lif = "";
+  if (party.length && yours.size) {
+    const got = (l) => Array.from(yours).filter((code) => byCode.has(code) && lacks(l, byCode.get(code))).length;
+    lif = ` · new lifers: ${party.map((l) => `${party.length > 1 ? esc(l.name) + " " : ""}<b>${got(l)}</b>`).join(" · ")}`;
+  }
+  const endN = Array.from(yours).filter(isEndemic).length;
+  $("#ckTotal").innerHTML = `<b>${yours.size}</b> species recorded${group.size > yours.size ? ` <span class="fine">(${group.size} with guide-only and others-only)</span>` : ""}${endN ? ` · <b>${endN}</b> endemic${endN === 1 ? "" : "s"}` : ""}${lif}`;
+}
+
+function ckCycle(td, back) {
+  const [code, sid] = td.dataset.ck.split("|");
+  const c = ckData();
+  const k = code + "|" + sid;
+  const cur = MARKS.indexOf(c.marks[k] || "");
+  const next = MARKS[(cur + (back ? MARKS.length - 1 : 1)) % MARKS.length];
+  if (next) c.marks[k] = next; else delete c.marks[k];
+  if (next && !c.names[code]) {
+    const sp = ckSpecies().find((s) => s.code === code);
+    if (sp) c.names[code] = { com: sp.com, sci: sp.sci };
+  }
+  td.className = `ck-c m-${next || "0"}`;
+  td.textContent = next ? MARK_SHOW[next] : "";
+  td.title = next ? MARK_NAME[next] : "";
+  const row = td.closest("tr");
+  const n = ckRowMarks(code).length;
+  $(".ck-t", row).textContent = n || "";
+  const del = $(".ck-del", row);
+  if (del && n) del.remove();
+  updateCkTotals();
+  markDirty();
+}
+
+$("#checklist").addEventListener("mousedown", (e) => { if (e.target.closest("td.ck-c") && (e.shiftKey || e.detail > 1)) e.preventDefault(); });
+$("#checklist").addEventListener("click", (e) => {
+  const td = e.target.closest("td.ck-c");
+  if (td) { ckCycle(td, e.shiftKey); return; }
+  const end = e.target.closest("[data-ck-end]");
+  if (end) {
+    const c = ckData(), code = end.dataset.ckEnd;
+    c.endemic = isEndemic(code) ? c.endemic.filter((x) => x !== code) : c.endemic.concat(code);
+    markDirty(); render(); return;
+  }
+  const del = e.target.closest("[data-ck-del]");
+  if (del) { const c = ckData(); c.extra = c.extra.filter((x) => x.code !== del.dataset.ckDel); markDirty(); render(); return; }
+  const col = e.target.closest("[data-ck-stop]");
+  if (col) { selectStop(col.dataset.ckStop, true); return; }
+  if (e.target.closest("[data-ck-tax-retry]")) { ck.taxError = ""; ck.version++; render(); return; }
+  const add = e.target.closest("[data-ck-add]");
+  if (add) {
+    const t = ck.all && ck.all.find((x) => x.speciesCode === add.dataset.ckAdd);
+    if (t) {
+      const c = ckData();
+      if (!c.extra.some((x) => x.code === t.speciesCode)) c.extra.push({ code: t.speciesCode, com: t.comName, sci: t.sciName });
+      c.tax[t.speciesCode] = [t.taxonOrder, t.familyComName || ""];
+      $("#ckAdd").value = ""; $("#ckAddRes").hidden = true;
+      markDirty(); render();
+      toast(`Added ${t.comName}`);
+    }
+  }
+});
+$("#ckQ").addEventListener("input", (e) => { ck.q = e.target.value.trim(); render(); });
+$("#ckShow").addEventListener("change", (e) => { ck.show = e.target.value; render(); });
+$("#ckLifers").addEventListener("change", (e) => { ck.lifers = e.target.checked; render(); });
+
+/* ＋ Add a species: search eBird's full species list (one download, saved 30 days). */
+async function loadAllTaxonomy() {
+  if (ck.all || ck.allLoading) return;
+  ck.allLoading = true;
+  showAddResults();
+  try {
+    const res = await api("/api/ebird/ref/taxonomy/ebird?fmt=json&cat=species");
+    ck.all = Array.isArray(res) ? res : [];
+  } catch (e) {
+    ck.allError = e.message;
+  }
+  ck.allLoading = false;
+  showAddResults();
+}
+function showAddResults() {
+  const ul = $("#ckAddRes");
+  const q = $("#ckAdd").value.trim().toLowerCase();
+  if (!q) { ul.hidden = true; return; }
+  ul.hidden = false;
+  if (ck.allLoading) { ul.innerHTML = `<li class="fine">Loading eBird's species list (first time only)…</li>`; return; }
+  if (ck.allError && !ck.all) { ul.innerHTML = `<li class="fine">${esc(ck.allError)}</li>`; return; }
+  if (!ck.all) { loadAllTaxonomy(); return; }
+  const have = new Set(ckSpecies().map((s) => s.code));
+  const hits = ck.all.filter((t) => (t.comName || "").toLowerCase().includes(q) || (t.sciName || "").toLowerCase().includes(q))
+    .sort((a, b) => (a.comName.toLowerCase().startsWith(q) ? 0 : 1) - (b.comName.toLowerCase().startsWith(q) ? 0 : 1) || a.taxonOrder - b.taxonOrder)
+    .slice(0, 8);
+  ul.innerHTML = hits.length ? hits.map((t) => have.has(t.speciesCode)
+      ? `<li class="fine">${esc(t.comName)} (already listed)</li>`
+      : `<li data-ck-add="${esc(t.speciesCode)}"><b>＋</b> ${esc(t.comName)} <i>${esc(t.sciName)}</i></li>`).join("")
+    : `<li class="fine">No species match.</li>`;
+}
+$("#ckAdd").addEventListener("input", showAddResults);
+$("#ckAdd").addEventListener("focus", () => { loadAllTaxonomy(); showAddResults(); });
+$("#ckAdd").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { $("#ckAdd").value = ""; $("#ckAddRes").hidden = true; }
+  if (e.key === "Enter") { const first = $("#ckAddRes [data-ck-add]"); if (first) first.click(); }
+});
+document.addEventListener("click", (e) => { if (!e.target.closest(".ck-add")) $("#ckAddRes").hidden = true; });
+
+/* Export the checklist as a CSV (opens in Excel or Sheets). */
+$("#ckCsv").addEventListener("click", () => {
+  const c = ckData();
+  const stops = state.trip.stops;
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const head = ["Family", "Common name", "Scientific name", "Endemic", "Lifer for",
+    ...stops.map((s, i) => { const day = dayNumber(s); return `${day ? "Day " + day : "Stop " + (i + 1)} ${stopDate(s) || ""} ${s.name}`.trim(); }), "Days recorded"];
+  const rows = [head.map(q).join(",")];
+  for (const sp of ckSorted()) {
+    const t = c.tax[sp.code];
+    const marks = stops.map((s) => ckMark(sp.code, s.id));
+    rows.push([t ? t[1] : "", sp.com, sp.sci, isEndemic(sp.code) ? "E" : "", liferFor(sp).map((l) => l.name).join("; "),
+      ...marks.map((m) => (m ? MARK_SHOW[m] : "")), marks.filter(Boolean).length || ""].map(q).join(","));
+  }
+  rows.push("", q("✓ seen · H heard only · F fly-by · G guide only · O others only"));
+  const blob = new Blob(["\uFEFF" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = (state.trip.name || "trip").replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-") + "-checklist.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+
+/* Map / Checklist switch for the big pane. */
+function applyView() {
+  const on = prefs.view === "checklist";
+  $("#map").hidden = on;
+  $("#checklist").hidden = !on;
+  $(".view-float").hidden = on;
+  $$("[data-view]").forEach((b) => { b.classList.toggle("on", b.dataset.view === (on ? "checklist" : "map")); b.setAttribute("aria-pressed", String(b.classList.contains("on"))); });
+  if (on) { ck.key = ""; render(); } else setTimeout(() => map.invalidateSize());
+}
+document.addEventListener("click", (e) => {
+  const v = e.target.closest("[data-view]");
+  if (!v) return;
+  prefs.view = v.dataset.view;
+  savePrefs();
+  applyView();
+});
+applyView();
