@@ -42,6 +42,7 @@ LISTS = os.path.join(DATA, "lifelists")
 EBIRD = "https://api.ebird.org/v2/"
 NOMINATIM = "https://nominatim.openstreetmap.org/"
 OSRM = "https://router.project-osrm.org/"
+WIKIDATA_SPARQL = "https://query.wikidata.org/sparql"
 USER_AGENT = "Peregrine-BirdTripPlanner/1.0 (personal, locally hosted)"
 
 def env(name, default=""):
@@ -69,6 +70,7 @@ _nominatim_lock = threading.Lock()       # Nominatim asks for <= 1 request/sec
 _last_nominatim = [0.0]
 _osrm_lock = threading.Lock()            # the public OSRM demo server: <= 1 request/sec
 _last_osrm = [0.0]
+_wikidata_lock = threading.Lock()        # one Wikidata query at a time
 _file_lock = threading.Lock()
 
 
@@ -141,8 +143,8 @@ def log_problem(msg):
         pass
 
 
-def fetch(url, headers, tries=3, timeout=30):
-    req = urllib.request.Request(url, headers=headers)
+def fetch(url, headers, tries=3, timeout=30, data=None):
+    req = urllib.request.Request(url, headers=headers, data=data)
     delay = 2.0
     short = url.split("?")[0].replace(EBIRD, "eBird ")
     for attempt in range(tries):
@@ -226,6 +228,60 @@ def nominatim_get(endpoint, query):
                 _last_nominatim[0] = time.time()
     cache_put(key, body)
     return body
+
+
+# ---------------------------------------------------------------- conservation status
+# The IUCN Red List category of each species, read from Wikidata (taxon name P225,
+# IUCN conservation status P141). Free, no key; one query covers many species.
+SCI_NAME = re.compile(r"^[A-Z][a-z]+ [a-z][a-z\-]+$")   # a plain binomial (also keeps the query safe)
+IUCN_LABELS = [("extinct in the wild", "EW"), ("critically endangered", "CR"), ("near threatened", "NT"),
+               ("least concern", "LC"), ("data deficient", "DD"), ("vulnerable", "VU"),
+               ("endangered", "EN"), ("extinct", "EX")]
+
+
+def iucn_code(label):
+    low = (label or "").lower()
+    for words, code in IUCN_LABELS:
+        if words in low:
+            return code
+    return ""
+
+
+def iucn_lookup(names):
+    """{scientific name: "LC" | "NT" | "VU" | "EN" | "CR" | "EW" | "EX" | "DD" | ""} ("" = not found)."""
+    names = sorted({n.strip() for n in names if isinstance(n, str) and SCI_NAME.match(n.strip())})[:1500]
+    out, need = {}, []
+    for n in names:
+        hit = cache_get("iucn:" + n, 30 * 86400)
+        if hit is None:
+            need.append(n)
+        else:
+            out[n] = hit
+    for i in range(0, len(need), 120):
+        part = need[i:i + 120]
+        if MOCK:
+            import mock_ebird
+            found = mock_ebird.iucn(part)
+        else:
+            query = ('SELECT ?name ?statusLabel WHERE { VALUES ?name { %s } '
+                     '?item wdt:P225 ?name; wdt:P141 ?status. '
+                     'SERVICE wikibase:label { bd:serviceParam wikibase:language "en". } }'
+                     % " ".join('"%s"' % n for n in part))
+            with _wikidata_lock:
+                body = fetch(WIKIDATA_SPARQL, {"User-Agent": USER_AGENT,
+                                               "Accept": "application/sparql-results+json",
+                                               "Content-Type": "application/x-www-form-urlencoded"},
+                             tries=2, timeout=60, data=urllib.parse.urlencode({"query": query}).encode())
+            found = {}
+            for b in ((body or {}).get("results") or {}).get("bindings") or []:
+                n = (b.get("name") or {}).get("value")
+                code = iucn_code((b.get("statusLabel") or {}).get("value"))
+                if n and code and n not in found:
+                    found[n] = code
+        for n in part:
+            out[n] = found.get(n, "")
+            cache_put("iucn:" + n, out[n])
+    return out
 
 
 # ---------------------------------------------------------------- driving times
@@ -771,6 +827,12 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"ok": True, "message": "Saved. eBird accepted the key."})
                 except UpstreamError as e:
                     return self.send_json({"ok": e.status != 401, "message": "Saved, but: " + e.message})
+            if path == "/api/iucn":
+                data = json.loads(self.body_bytes() or b"{}")
+                names = data.get("names") if isinstance(data, dict) else None
+                if not isinstance(names, list):
+                    return self.error_json(400, "Send a list of scientific names.")
+                return self.send_json(iucn_lookup(names))
             if path == "/api/lifelists":
                 # A new list, or a re-upload of an existing one (?id=...). Its name is in X-List-Name.
                 q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))

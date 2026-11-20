@@ -133,6 +133,16 @@ def answer(path, query):
     return []
 
 
+def iucn(names):
+    """Made-up IUCN categories: mostly Least Concern, a few of each other kind, some unknown."""
+    out = {}
+    for n in names:
+        x = _h(n, "iucn")
+        out[n] = ("LC" if x < 0.7 else "NT" if x < 0.78 else "VU" if x < 0.84 else
+                  "EN" if x < 0.88 else "CR" if x < 0.9 else "")
+    return out
+
+
 def drive(src, dests):
     """Made-up OSRM table answer: road distance about 1.3x straight-line (5x for the ~20%
     of places behind a "mountain"), at 55 km/h."""

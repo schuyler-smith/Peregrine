@@ -326,15 +326,17 @@ body.drag-stops, body.drag-stops * { cursor: grabbing !important; user-select: n
 table.ck { border-collapse: separate; border-spacing: 0; font-size: 13px; }
 .ck thead th { position: sticky; top: 0; z-index: 2; background: #f7f4ea; border-bottom: 2px solid var(--line); vertical-align: bottom; }
 .ck .ck-sp { position: sticky; left: 0; z-index: 1; background: #fff; text-align: left; font-weight: 400; min-width: 240px; max-width: 340px; padding: 3px 8px; border-right: 2px solid var(--line); border-bottom: 1px solid #efe9da; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ck thead .ck-sp { z-index: 3; background: #f7f4ea; font-weight: 700; }
+.ck thead .ck-sp { z-index: 1000; background: #f7f4ea; font-weight: 700; }
 .ck tr.lifer .ck-sp { background: linear-gradient(90deg, var(--gold-bg), #fff 85%); }
 .ck-name { font-weight: 600; }
 .ck .lifer-tag { font-size: 10.5px; }
 .ck-col { width: 34px; min-width: 34px; max-width: 34px; padding: 4px 0 2px; cursor: pointer; font-weight: 400; }
 .ck-col:hover { background: #ece6d5; }
-.ck-vert { writing-mode: vertical-rl; transform: rotate(180deg); margin: 0 auto; max-height: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; line-height: 1.25; text-align: left; }
-.ck-vert b { font-size: 12px; }
-.ck-vert span { color: var(--muted); }
+/* Day labels angled at 45°, reading up and to the right from the bottom of each column. */
+.ck-ang { position: relative; height: 80px; } /* fits "Day 12 Sep 30" at 45° */
+.ck-ang span { position: absolute; left: 50%; bottom: 2px; margin-left: -4px; transform-origin: left bottom; transform: rotate(-45deg); white-space: nowrap; font-size: 12px; color: var(--muted); }
+.ck-ang b { color: var(--ink); margin-right: 3px; }
+table.ck { margin-right: 70px; } /* room for the last labels to lean into */
 .ck-n { font-size: 11px; font-weight: 700; color: var(--green); height: 15px; margin-top: 3px; }
 .ck-tot { cursor: default; }
 .ck-tot:hover { background: #f7f4ea; }
@@ -349,9 +351,27 @@ td.ck-c:hover { box-shadow: inset 0 0 0 2px var(--green-2); }
 .m-G { background: #f5e9cc; color: #8a6a1f; }
 .m-O { background: #e9e7e1; color: #5f5d57; }
 td.ck-t { text-align: center; color: var(--muted); font-size: 12px; min-width: 34px; border-bottom: 1px solid #efe9da; }
-.ck-e { border: 1px solid var(--line); background: #fff; color: #c2baa3; border-radius: 50%; width: 19px; height: 19px; padding: 0; font-size: 10.5px; font-weight: 700; line-height: 17px; margin-right: 6px; vertical-align: 1px; }
-.ck-e:hover { color: #2f5d7c; border-color: #2f5d7c; background: #fff; }
-.ck-e.on, .ck-legend .ck-e { background: #2f5d7c; color: #fff; border-color: #2f5d7c; }
-.ck-legend .ck-e { border-radius: 50%; min-width: 16px; font-size: 10px; }
+/* name, tags, then the status box at the right edge of the species column */
+.ck-spin { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.ck-spin .ck-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ck-spin .lifer-tag { flex: none; margin-left: 2px; }
+.ck-st, .ck-st-h { margin-left: auto; flex: none; }
+.ck-st { width: 22px; height: 20px; border: 1px solid var(--line); border-radius: 4px; display: grid; place-items: center; font-size: 11.5px; font-weight: 700; cursor: pointer; user-select: none; background: #fff; }
+.ck-st:hover { box-shadow: inset 0 0 0 2px var(--green-2); }
+.ck-st-h { font-size: 11px; font-weight: 600; color: var(--muted); }
+.st-E { background: #2f5d7c; color: #fff; border-color: #2f5d7c; }
+.st-N { background: #dbe8cf; color: #2e5a26; }
+.st-I { background: #f6dfcf; color: #8a4a1f; }
+.st-V { background: #ebe1f1; color: #6b3f7f; }
+.st-P { background: #d4ecec; color: #1f6a6a; }
+
+/* IUCN Red List badges (from Wikidata) */
+.iucn { flex: none; font-size: 10px; font-weight: 700; letter-spacing: .02em; border-radius: 3px; padding: 0 4px; line-height: 15px; margin-left: 3px; }
+.iucn-LC, .iucn-DD { color: #8a8f80; border: 1px solid #ddd8c8; line-height: 13px; }
+.iucn-NT { background: #e8eccf; color: #5f6a1f; }
+.iucn-VU { background: #f7dfa6; color: #7a5200; }
+.iucn-EN { background: #f2b48c; color: #6e2a08; }
+.iucn-CR { background: #c8442e; color: #fff; }
+.iucn-EW, .iucn-EX { background: #333; color: #fff; }
 .ck-del { border: 0; background: none; color: var(--muted); padding: 0 4px; font-size: 12px; }
 .ck-del:hover { color: var(--red); background: none; }

@@ -1958,7 +1958,8 @@ function renderFindAll() {
      marks   {"code|stopId": "X" | "H" | "F" | "G" | "O"}
      names   {code: {com, sci}}   for every marked bird, so it never drops off the list
      extra   [{code, com, sci}]   species added by hand
-     endemic [code]               marked endemic by hand
+     status  {code: "E" | "N" | "I" | "V" | "P"}  set by hand: endemic, native, introduced,
+                                  vagrant, pelagic (older trips' endemic list becomes "E")
      tax     {code: [taxonOrder, family]}  from eBird, so reopening needs no requests */
 function cleanChecklist(c) {
   c = c && typeof c === "object" ? c : {};
@@ -1968,9 +1969,37 @@ function cleanChecklist(c) {
     marks: Object.fromEntries(Object.entries(obj(c.marks)).filter(([, v]) => ok[v])),
     names: obj(c.names),
     extra: Array.isArray(c.extra) ? c.extra.filter((x) => x && typeof x.code === "string") : [],
-    endemic: Array.isArray(c.endemic) ? c.endemic.filter((x) => typeof x === "string") : [],
+    status: Object.assign(
+      Object.fromEntries((Array.isArray(c.endemic) ? c.endemic : []).filter((x) => typeof x === "string").map((x) => [x, "E"])),
+      Object.fromEntries(Object.entries(obj(c.status)).filter(([, v]) => ({ E: 1, N: 1, I: 1, V: 1, P: 1 })[v]))),
     tax: obj(c.tax),
+    iucn: Object.fromEntries(Object.entries(obj(c.iucn)).filter(([, v]) => v === "" || ({ LC: 1, NT: 1, VU: 1, EN: 1, CR: 1, EW: 1, EX: 1, DD: 1 })[v])),
   };
+}
+/* IUCN Red List category per species, from Wikidata, saved with the trip in checklist.iucn. */
+const IUCN_NAME = { LC: "Least Concern", NT: "Near Threatened", VU: "Vulnerable", EN: "Endangered", CR: "Critically Endangered", EW: "Extinct in the Wild", EX: "Extinct", DD: "Data Deficient" };
+const THREATENED = new Set(["VU", "EN", "CR", "EW"]);
+function iucnHTML(code) {
+  const v = ckData().iucn[code];
+  return v ? `<span class="iucn iucn-${v}" title="IUCN Red List: ${IUCN_NAME[v]} (via Wikidata)">${v}</span>` : "";
+}
+async function ensureIucn(list) {
+  const c = ckData();
+  const need = list.filter((sp) => !(sp.code in c.iucn) && sp.sci);
+  if (!need.length || ck.iucnLoading) return;
+  ck.iucnLoading = true;
+  ck.iucnError = "";
+  try {
+    const sciOf = (sp) => sp.sci.trim().split(/\s+/).slice(0, 2).join(" ");
+    const res = await api("/api/iucn", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ names: need.map(sciOf) }) });
+    for (const sp of need) c.iucn[sp.code] = res[sciOf(sp)] || "";
+    markDirty();
+  } catch (e) {
+    ck.iucnError = e.message;
+  }
+  ck.iucnLoading = false;
+  ck.version++;
+  render();
 }
 const MARKS = ["", "X", "H", "F", "G", "O"];
 const MARK_SHOW = { X: "✓", H: "H", F: "F", G: "G", O: "O" };
@@ -2022,7 +2051,14 @@ async function ensureTaxonomy(codes) {
 
 function ckMark(code, stopId) { return ckData().marks[code + "|" + stopId] || ""; }
 function ckRowMarks(code) { return state.trip.stops.map((s) => ckMark(code, s.id)).filter(Boolean); }
-function isEndemic(code) { return ckData().endemic.includes(code); }
+const STATUSES = ["", "E", "N", "I", "V", "P"];
+const STATUS_NAME = { E: "Endemic", N: "Native", I: "Introduced", V: "Vagrant", P: "Pelagic" };
+function ckStatus(code) { return ckData().status[code] || ""; }
+function isEndemic(code) { return ckStatus(code) === "E"; }
+function ckStatusHTML(code) {
+  const s = ckStatus(code);
+  return `<span class="ck-st st-${s || "0"}" data-ck-st="${esc(code)}" title="${s ? STATUS_NAME[s] + ". " : ""}Click: endemic → native → introduced → vagrant → pelagic. Right-click clears.">${s}</span>`;
+}
 
 function ckSorted() {
   const c = ckData();
@@ -2045,16 +2081,17 @@ function ckVisible(sp) {
 function ckColHead(stop, i) {
   const day = dayNumber(stop);
   const d = stopDate(stop);
-  const label = `${day ? `Day ${day}` : `Stop ${i + 1}`}${d ? " · " + niceDate(d) : ""}`;
-  return `<th class="ck-col" data-ck-stop="${esc(stop.id)}" title="${esc(label + " · " + stop.name)}. Click to open this stop.">
-    <div class="ck-vert"><b>${esc(stop.name)}</b><span>${esc(label)}</span></div><div class="ck-n" data-ck-n="${esc(stop.id)}"></div></th>`;
+  const first = day ? `Day ${day}` : `Stop ${i + 1}`;
+  // Angled labels spill to the right over the next headings, so each heading sits above the ones after it.
+  return `<th class="ck-col" data-ck-stop="${esc(stop.id)}" style="z-index:${state.trip.stops.length - i + 3}" title="${esc(`${first}${d ? " · " + niceDate(d, true) : ""} · ${stop.name}`)}. Click to open this stop.">
+    <div class="ck-ang"><span><b>${esc(first)}</b>${d ? ` ${esc(niceDate(d))}` : ""}</span></div><div class="ck-n" data-ck-n="${esc(stop.id)}"></div></th>`;
 }
 
 function renderChecklist() {
   const c = ckData();
   const stops = state.trip.stops;
   const key = JSON.stringify([stops.map((s) => [s.id, s.name, stopDate(s), state.results.get(s.id)?.status, state.results.get(s.id)?.sig]),
-    lifeKey(), c.extra.map((x) => x.code), c.endemic, Object.keys(c.tax).length, ck.q, ck.show, ck.lifers, ck.version]);
+    lifeKey(), c.extra.map((x) => x.code), Object.keys(c.tax).length, Object.keys(c.iucn).length, ck.q, ck.show, ck.lifers, ck.version]);
   if (key === ck.key) return;
   ck.key = key;
   const wrap = $("#ckWrap");
@@ -2063,11 +2100,13 @@ function renderChecklist() {
   if (!list.length) { wrap.innerHTML = `<div class="empty ck-empty">No birds yet. Click <b>Find birds</b> for your stops (Itinerary tab), or add species with <b>＋ Add a species</b>.</div>`; updateCkTotals(); return; }
   const missing = list.filter((sp) => !c.tax[sp.code]).map((sp) => sp.code);
   if (missing.length && !ck.taxLoading && !ck.taxError) setTimeout(() => ensureTaxonomy(missing));
+  if (list.some((sp) => !(sp.code in c.iucn)) && !ck.iucnLoading && !ck.iucnError) setTimeout(() => ensureIucn(list));
   const cols = stops.length + 2;
   let html = "";
   if (ck.taxLoading) html += `<p class="fine ck-note">Putting the birds in taxonomic order (from eBird)…</p>`;
   if (ck.taxError) html += `<p class="fine ck-note">Couldn't get the taxonomic order from eBird (${esc(ck.taxError)}), so some birds are listed A–Z at the end. <a data-ck-tax-retry>Try again</a></p>`;
-  html += `<table class="ck"><thead><tr><th class="ck-sp">Species <span class="fine">(${list.length})</span></th>${stops.map(ckColHead).join("")}<th class="ck-col ck-tot"><div class="ck-vert"><b>Total</b><span>days recorded</span></div></th></tr></thead><tbody>`;
+  if (ck.iucnError) html += `<p class="fine ck-note">Couldn't get conservation status from Wikidata (${esc(ck.iucnError)}). <a data-ck-iucn-retry>Try again</a></p>`;
+  html += `<table class="ck"><thead><tr><th class="ck-sp"><div class="ck-spin"><span class="ck-name">Species <span class="fine">(${list.length})</span></span><span class="ck-st-h" title="Endemic, Native, Introduced, Vagrant or Pelagic. You set this.">Status</span></div></th>${stops.map(ckColHead).join("")}<th class="ck-col ck-tot" title="How many days each bird was recorded"><div class="ck-ang"><span><b>Total</b></span></div><div class="ck-n"></div></th></tr></thead><tbody>`;
   let fam = null, shown = 0;
   for (const sp of list) {
     if (!ckVisible(sp)) continue;
@@ -2075,10 +2114,9 @@ function renderChecklist() {
     const t = c.tax[sp.code];
     const f = t ? (t[1] || "Other") : "Not sorted yet";
     if (f !== fam) { fam = f; html += `<tr class="ck-fam"><th colspan="${cols}"><span>${esc(f)}</span></th></tr>`; }
-    const end = isEndemic(sp.code);
     const marks = ckRowMarks(sp.code);
     html += `<tr class="${isLifer(sp) ? "lifer" : ""}" data-code="${esc(sp.code)}">
-      <th class="ck-sp"><button type="button" class="ck-e ${end ? "on" : ""}" data-ck-end="${esc(sp.code)}" title="${end ? "Endemic (click to unmark)" : "Mark as endemic"}" aria-pressed="${end}">E</button><span class="ck-name" title="${esc(sp.sci)}">${esc(sp.com)}</span>${liferTagHTML(sp)}${sp.extra && !marks.length ? `<button type="button" class="ck-del" data-ck-del="${esc(sp.code)}" title="Remove from the checklist">✕</button>` : ""}</th>
+      <th class="ck-sp"><div class="ck-spin"><span class="ck-name" title="${esc(sp.sci)}">${esc(sp.com)}</span>${iucnHTML(sp.code)}${liferTagHTML(sp)}${sp.extra && !marks.length ? `<button type="button" class="ck-del" data-ck-del="${esc(sp.code)}" title="Remove from the checklist">✕</button>` : ""}${ckStatusHTML(sp.code)}</div></th>
       ${stops.map((s) => { const m = ckMark(sp.code, s.id); return `<td class="ck-c m-${m || "0"}" data-ck="${esc(sp.code)}|${esc(s.id)}"${m ? ` title="${MARK_NAME[m]}"` : ""}>${m ? MARK_SHOW[m] : ""}</td>`; }).join("")}
       <td class="ck-t">${marks.length || ""}</td></tr>`;
   }
@@ -2110,15 +2148,18 @@ function updateCkTotals() {
     lif = ` · new lifers: ${party.map((l) => `${party.length > 1 ? esc(l.name) + " " : ""}<b>${got(l)}</b>`).join(" · ")}`;
   }
   const endN = Array.from(yours).filter(isEndemic).length;
+  const thrN = Array.from(yours).filter((code) => THREATENED.has(c.iucn[code])).length;
+  if (thrN) lif = ` · <b>${thrN}</b> threatened <span class="fine">(VU/EN/CR)</span>` + lif;
   $("#ckTotal").innerHTML = `<b>${yours.size}</b> species recorded${group.size > yours.size ? ` <span class="fine">(${group.size} with guide-only and others-only)</span>` : ""}${endN ? ` · <b>${endN}</b> endemic${endN === 1 ? "" : "s"}` : ""}${lif}`;
 }
 
-function ckCycle(td, back) {
+function ckCycle(td, back, clear = false) {
   const [code, sid] = td.dataset.ck.split("|");
   const c = ckData();
   const k = code + "|" + sid;
+  if (clear && !c.marks[k]) return;
   const cur = MARKS.indexOf(c.marks[k] || "");
-  const next = MARKS[(cur + (back ? MARKS.length - 1 : 1)) % MARKS.length];
+  const next = clear ? "" : MARKS[(cur + (back ? MARKS.length - 1 : 1)) % MARKS.length];
   if (next) c.marks[k] = next; else delete c.marks[k];
   if (next && !c.names[code]) {
     const sp = ckSpecies().find((s) => s.code === code);
@@ -2136,21 +2177,36 @@ function ckCycle(td, back) {
   markDirty();
 }
 
-$("#checklist").addEventListener("mousedown", (e) => { if (e.target.closest("td.ck-c") && (e.shiftKey || e.detail > 1)) e.preventDefault(); });
+/** Status box next to a bird's name: E → N → I → V → P → clear (back with shift, clear with right-click). */
+function ckStatusCycle(el, back, clear = false) {
+  const c = ckData(), code = el.dataset.ckSt;
+  const cur = STATUSES.indexOf(c.status[code] || "");
+  const next = clear ? "" : STATUSES[(cur + (back ? STATUSES.length - 1 : 1)) % STATUSES.length];
+  if (next) c.status[code] = next; else delete c.status[code];
+  el.outerHTML = ckStatusHTML(code);
+  updateCkTotals();
+  markDirty();
+}
+$("#checklist").addEventListener("mousedown", (e) => { if (e.target.closest("td.ck-c, [data-ck-st]") && (e.shiftKey || e.detail > 1)) e.preventDefault(); });
+$("#checklist").addEventListener("contextmenu", (e) => {
+  const td = e.target.closest("td.ck-c");
+  const st = e.target.closest("[data-ck-st]");
+  if (!td && !st) return; // the normal menu everywhere else
+  e.preventDefault();
+  if (td) ckCycle(td, false, true); // right-click clears the box
+  else ckStatusCycle(st, false, true);
+});
 $("#checklist").addEventListener("click", (e) => {
   const td = e.target.closest("td.ck-c");
   if (td) { ckCycle(td, e.shiftKey); return; }
-  const end = e.target.closest("[data-ck-end]");
-  if (end) {
-    const c = ckData(), code = end.dataset.ckEnd;
-    c.endemic = isEndemic(code) ? c.endemic.filter((x) => x !== code) : c.endemic.concat(code);
-    markDirty(); render(); return;
-  }
+  const st = e.target.closest("[data-ck-st]");
+  if (st) { ckStatusCycle(st, e.shiftKey); return; }
   const del = e.target.closest("[data-ck-del]");
   if (del) { const c = ckData(); c.extra = c.extra.filter((x) => x.code !== del.dataset.ckDel); markDirty(); render(); return; }
   const col = e.target.closest("[data-ck-stop]");
   if (col) { selectStop(col.dataset.ckStop, true); return; }
   if (e.target.closest("[data-ck-tax-retry]")) { ck.taxError = ""; ck.version++; render(); return; }
+  if (e.target.closest("[data-ck-iucn-retry]")) { ck.iucnError = ""; ck.version++; render(); return; }
   const add = e.target.closest("[data-ck-add]");
   if (add) {
     const t = ck.all && ck.all.find((x) => x.speciesCode === add.dataset.ckAdd);
@@ -2212,13 +2268,13 @@ $("#ckCsv").addEventListener("click", () => {
   const c = ckData();
   const stops = state.trip.stops;
   const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const head = ["Family", "Common name", "Scientific name", "Endemic", "Lifer for",
+  const head = ["Family", "Common name", "Scientific name", "Status", "IUCN", "Lifer for",
     ...stops.map((s, i) => { const day = dayNumber(s); return `${day ? "Day " + day : "Stop " + (i + 1)} ${stopDate(s) || ""} ${s.name}`.trim(); }), "Days recorded"];
   const rows = [head.map(q).join(",")];
   for (const sp of ckSorted()) {
     const t = c.tax[sp.code];
     const marks = stops.map((s) => ckMark(sp.code, s.id));
-    rows.push([t ? t[1] : "", sp.com, sp.sci, isEndemic(sp.code) ? "E" : "", liferFor(sp).map((l) => l.name).join("; "),
+    rows.push([t ? t[1] : "", sp.com, sp.sci, STATUS_NAME[ckStatus(sp.code)] || "", IUCN_NAME[c.iucn[sp.code]] || "", liferFor(sp).map((l) => l.name).join("; "),
       ...marks.map((m) => (m ? MARK_SHOW[m] : "")), marks.filter(Boolean).length || ""].map(q).join(","));
   }
   rows.push("", q("✓ seen · H heard only · F fly-by · G guide only · O others only"));
