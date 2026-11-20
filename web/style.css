@@ -46,7 +46,7 @@ button.icon { padding: 1px 7px; font-size: 13px; line-height: 1.5; color: var(--
 /* layout */
 .layout { flex: 1; display: flex; min-height: 0; }
 #map { flex: 2; min-width: 0; background: #e6e3d8; }
-#map .leaflet-tile-pane { filter: saturate(.72) sepia(.08); }
+#map.layer-street .leaflet-tile-pane { filter: saturate(.72) sepia(.08); }
 .panel { flex: 1; min-width: 360px; max-width: 560px; display: flex; flex-direction: column; background: var(--paper); border-left: 1px solid var(--line); min-height: 0; }
 .tabs { display: flex; border-bottom: 1px solid var(--line); padding: 0 8px; }
 .tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; padding: 10px 14px 8px; color: var(--muted); font-weight: 600; }
@@ -233,3 +233,48 @@ input:focus, select:focus { outline: 2px solid rgba(61,90,58,.25); border-color:
 .find-box .fine { margin: 8px 0 0; }
 .stale-box { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .stale-box button { margin-left: auto; }
+
+/* life lists and the birding party */
+.lists-list { list-style: none; padding: 0; margin: 6px 0 8px; }
+.lists-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid #efe9da; }
+.lists-list .list-name { flex: 1; min-width: 120px; font-weight: 600; }
+.lists-list .fine { margin: 0; }
+.add-list input { flex: 1; }
+.file-btn { display: inline-block; cursor: pointer; border-radius: 6px; border: 1px solid var(--line); padding: 3px 9px; font-size: 13px; white-space: nowrap; }
+.file-btn.primary { background: var(--green); color: #fff; border-color: var(--green); }
+.file-btn.primary:hover { background: #33502f; }
+.file-btn.ghost:hover { background: #f0ebdd; }
+.file-btn:focus-within { outline: 2px solid rgba(61,90,58,.35); }
+.party { margin-top: 14px; }
+.party-people { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.party-people .check { margin-top: 2px; }
+.party-people .fine { margin: 0; }
+.prio { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin-top: 8px; }
+.party .fine { margin-top: 4px; }
+.per-person { font-size: 13px; color: var(--muted); margin: 0 0 8px; }
+.per-person b { color: var(--gold); }
+.lifer-tag.other { background: #f3ead2; color: #8a7a4f; font-weight: 600; }
+#fWho { max-width: 130px; }
+
+/* hotspots: views, drive times, checklist days */
+.hs-modes { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+.hs-modes select { font-size: 13px; padding: 2px 4px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 3px 10px; font-size: 12.5px; background: #fff; color: var(--muted); }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--green); color: #fff; }
+.drive { white-space: nowrap; }
+.hs-who { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.hs-who b { color: var(--gold); }
+.link-btn { border: 0; background: none; padding: 2px 0; font-size: 12.5px; color: var(--green); font-weight: 600; }
+.link-btn:hover { background: none; text-decoration: underline; }
+.hs-days { margin: 4px 0 2px; padding: 6px 8px; background: #faf7ee; border-radius: 6px; }
+.hs-days .fine { margin: 0 0 6px; }
+.hs-days a { cursor: pointer; }
+.hd-list { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; }
+.hd-list li { display: grid; grid-template-columns: 44px 60px 1fr; gap: 8px; align-items: center; padding: 2px 0; font-size: 13px; }
+.hd-list li.lifer { background: linear-gradient(90deg, var(--gold-bg), transparent 80%); }
+.hd-list li.starred { background: linear-gradient(90deg, #fbe7b4, transparent 80%); }
+.hd-n { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); font-size: 12px; }
+.hd-list .bar i { background: var(--olive); }
+.hd-name .star-btn { font-size: 14px; }

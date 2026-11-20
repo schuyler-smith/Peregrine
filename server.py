@@ -36,10 +36,12 @@ DATA = os.path.join(ROOT, "data")
 TRIPS = os.path.join(DATA, "trips")
 CACHE = os.path.join(ROOT, "cache")
 SETTINGS_FILE = os.path.join(DATA, "settings.json")
-LIFELIST_FILE = os.path.join(DATA, "lifelist.json")
+LIFELIST_FILE = os.path.join(DATA, "lifelist.json")   # older single list (moved into LISTS)
+LISTS = os.path.join(DATA, "lifelists")
 
 EBIRD = "https://api.ebird.org/v2/"
 NOMINATIM = "https://nominatim.openstreetmap.org/"
+OSRM = "https://router.project-osrm.org/"
 USER_AGENT = "Peregrine-BirdTripPlanner/1.0 (personal, locally hosted)"
 
 def env(name, default=""):
@@ -56,7 +58,7 @@ ALLOWED_HOSTS = [h.strip().lower() for h in
                  env("ALLOWED_HOSTS").split(",") if h.strip()]
 LOCAL_ONLY = HOST in ("127.0.0.1", "localhost", "::1")
 
-for d in (DATA, TRIPS, CACHE):
+for d in (DATA, TRIPS, CACHE, LISTS):
     os.makedirs(d, exist_ok=True)
 
 _upstream = threading.Semaphore(2)       # be polite to eBird: 2 at a time...
@@ -65,6 +67,8 @@ _last_ebird = [0.0]
 EBIRD_GAP = 0.34
 _nominatim_lock = threading.Lock()       # Nominatim asks for <= 1 request/sec
 _last_nominatim = [0.0]
+_osrm_lock = threading.Lock()            # the public OSRM demo server: <= 1 request/sec
+_last_osrm = [0.0]
 _file_lock = threading.Lock()
 
 
@@ -224,6 +228,61 @@ def nominatim_get(endpoint, query):
     return body
 
 
+# ---------------------------------------------------------------- driving times
+MAX_DRIVE_DESTS = 25
+
+
+def drive_table(src, dests):
+    """Driving time and distance from src to each of dests ((lat, lng) pairs), by road.
+
+    Uses the public OSRM server (OpenStreetMap roads, a car, no traffic). snapM is how far
+    each place is from the nearest road OSRM could use; a big number means "approximate"."""
+    coords = ";".join("%.5f,%.5f" % (lng, lat) for lat, lng in [src] + dests)
+    path = "table/v1/driving/" + coords
+    query = {"sources": "0", "annotations": "duration,distance"}
+    qs = urllib.parse.urlencode(sorted(query.items()))
+    key = "osrm:" + path + "?" + qs
+    body = cache_get(key, 30 * 86400)
+    if body is None:
+        if MOCK:
+            import mock_ebird
+            body = mock_ebird.drive(src, dests)
+        else:
+            with _osrm_lock:
+                wait = 1.05 - (time.time() - _last_osrm[0])
+                if wait > 0:
+                    time.sleep(wait)
+                try:
+                    body = fetch(OSRM + path + "?" + qs, {"User-Agent": USER_AGENT}, tries=2, timeout=20)
+                finally:
+                    _last_osrm[0] = time.time()
+        if not body or body.get("code") != "Ok":
+            raise UpstreamError(502, "The routing service couldn't work out driving times.")
+        cache_put(key, body)
+    dur = (body.get("durations") or [[]])[0]
+    dist = (body.get("distances") or [[]])[0]
+    snaps = [d.get("distance") for d in (body.get("destinations") or [])]
+    src_snap = ((body.get("sources") or [{}])[0] or {}).get("distance")
+    out = []
+    for i in range(len(dests)):
+        d = dur[i + 1] if i + 1 < len(dur) else None
+        k = dist[i + 1] if i + 1 < len(dist) else None
+        out.append({"min": None if d is None else round(d / 60, 1),
+                    "km": None if k is None else round(k / 1000, 1),
+                    "snapM": snaps[i + 1] if i + 1 < len(snaps) else None})
+    return {"srcSnapM": src_snap, "dests": out}
+
+
+def parse_latlng(text):
+    try:
+        lat, lng = (float(x) for x in text.split(","))
+    except ValueError:
+        raise ValueError("Bad coordinates.")
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        raise ValueError("Bad coordinates.")
+    return lat, lng
+
+
 # ---------------------------------------------------------------- life list
 def binomial(sci):
     parts = (sci or "").strip().split()
@@ -271,6 +330,53 @@ def parse_lifelist(raw):
     if not species:
         raise ValueError("No species found in that file.")
     return species
+
+
+LIST_ID = re.compile(r"^[a-z0-9-]{1,60}$")
+
+
+def list_path(lid):
+    return os.path.join(LISTS, lid + ".json")
+
+
+def all_lifelists():
+    out = []
+    for fn in os.listdir(LISTS):
+        if fn.endswith(".json"):
+            obj = read_json(os.path.join(LISTS, fn), None)
+            if obj and obj.get("id"):
+                out.append(obj)
+    out.sort(key=lambda o: (o.get("createdAt") or "", o.get("name") or ""))
+    return out
+
+
+def new_list_id(name):
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "list").lower()).strip("-")[:30]
+    return (slug or "list") + "-" + secrets.token_hex(3)
+
+
+def clean_name(name, fallback):
+    name = re.sub(r"\s+", " ", name or "").strip()[:40]
+    return name or fallback
+
+
+def migrate_lifelist():
+    """Earlier versions kept one life list in data/lifelist.json; make it the first named list."""
+    if not os.path.exists(LIFELIST_FILE):
+        return
+    old = read_json(LIFELIST_FILE, None)
+    if old and old.get("species") and not all_lifelists():
+        lid = new_list_id("me")
+        write_json(list_path(lid), {
+            "id": lid, "name": "Me", "species": old["species"], "filename": old.get("filename", ""),
+            "importedAt": old.get("importedAt", ""), "createdAt": old.get("importedAt", "")})
+    try:
+        os.replace(LIFELIST_FILE, LIFELIST_FILE + ".migrated")
+    except OSError:
+        pass
+
+
+migrate_lifelist()
 
 
 # ---------------------------------------------------------------- route import
@@ -606,8 +712,14 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"hasKey": bool(k) or MOCK,
                                        "keyHint": (k[:3] + "…") if k else "",
                                        "mock": MOCK})
-            if path == "/api/lifelist":
-                return self.send_json(read_json(LIFELIST_FILE, {"species": []}))
+            if path == "/api/lifelists":
+                return self.send_json(all_lifelists())
+            if path == "/api/drive":
+                src = parse_latlng(q.get("from", ""))
+                dests = [parse_latlng(x) for x in q.get("to", "").split("|") if x.strip()]
+                if not dests or len(dests) > MAX_DRIVE_DESTS:
+                    return self.error_json(400, "Give 1 to %d places to drive to." % MAX_DRIVE_DESTS)
+                return self.send_json(drive_table(src, dests))
             if path == "/api/trips":
                 out = []
                 for fn in os.listdir(TRIPS):
@@ -630,6 +742,8 @@ class Handler(SimpleHTTPRequestHandler):
             return super().do_GET()
         except UpstreamError as e:
             return self.error_json(e.status, e.message)
+        except ValueError as e:
+            return self.error_json(400, str(e) or "Bad request.")
         except Exception as e:  # never leave the browser hanging
             return self.error_json(500, "Server error: %s" % e)
 
@@ -657,12 +771,34 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json({"ok": True, "message": "Saved. eBird accepted the key."})
                 except UpstreamError as e:
                     return self.send_json({"ok": e.status != 401, "message": "Saved, but: " + e.message})
-            if path == "/api/lifelist":
+            if path == "/api/lifelists":
+                # A new list, or a re-upload of an existing one (?id=...). Its name is in X-List-Name.
+                q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(self.path).query))
                 species = parse_lifelist(self.body_bytes())
-                name = urllib.parse.unquote(self.headers.get("X-Filename", "life list.csv"))
-                obj = {"species": species, "filename": name,
-                       "importedAt": dt.datetime.now().isoformat(timespec="minutes")}
-                write_json(LIFELIST_FILE, obj)
+                now = dt.datetime.now().isoformat(timespec="seconds")
+                given = urllib.parse.unquote(self.headers.get("X-List-Name", ""))
+                lid = q.get("id", "")
+                old = read_json(list_path(lid), None) if LIST_ID.match(lid) else None
+                if old:
+                    obj = old
+                    obj["name"] = clean_name(given, old.get("name") or "Life list")
+                else:
+                    obj = {"id": new_list_id(given), "createdAt": now,
+                           "name": clean_name(given, "Life list %d" % (len(all_lifelists()) + 1))}
+                obj.update({"species": species, "importedAt": now[:16],
+                            "filename": urllib.parse.unquote(self.headers.get("X-Filename", "life list.csv"))})
+                write_json(list_path(obj["id"]), obj)
+                return self.send_json(obj)
+            m = re.match(r"^/api/lifelists/([^/]+)$", path)
+            if m:
+                if not LIST_ID.match(m[1]):
+                    return self.error_json(400, "Bad list id.")
+                obj = read_json(list_path(m[1]), None)
+                if not obj:
+                    return self.error_json(404, "List not found.")
+                data = json.loads(self.body_bytes() or b"{}")
+                obj["name"] = clean_name(data.get("name"), obj.get("name") or "Life list")
+                write_json(list_path(m[1]), obj)
                 return self.send_json(obj)
             if path == "/api/import-route":
                 ctype = (self.headers.get("Content-Type") or "").lower()
@@ -713,9 +849,11 @@ class Handler(SimpleHTTPRequestHandler):
             if os.path.exists(p):
                 os.remove(p)
             return self.send_json({"ok": True})
-        if path == "/api/lifelist":
-            if os.path.exists(LIFELIST_FILE):
-                os.remove(LIFELIST_FILE)
+        m = re.match(r"^/api/lifelists/([^/]+)$", path)
+        if m and LIST_ID.match(m[1]):
+            p = list_path(m[1])
+            if os.path.exists(p):
+                os.remove(p)
             return self.send_json({"ok": True})
         return self.error_json(404, "Unknown endpoint.")
 

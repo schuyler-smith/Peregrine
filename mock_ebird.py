@@ -55,11 +55,20 @@ def answer(path, query):
         county = "US-NY-%03d" % (int(_h(round(lat, 1), round(lng, 1)) * 120) + 1)
         names = ["Marsh Trail", "Lakeshore Park", "Old Quarry", "Hawk Ridge", "River Flats",
                  "Pine Woods", "Sewage Ponds", "Cemetery", "Sod Farm", "Harbor Jetty", "Town Park", "Bog"]
+        import math
+        dist = float(query.get("dist", 25))
         out = []
         for i, nm in enumerate(names):
+            # Spread the sample hotspots over a 50 km circle; eBird only returns those within dist.
+            r_km = 50 * _h(i, "r") ** 0.6
+            ang = _h(i, "a") * 2 * math.pi
+            if r_km > dist:
+                continue
+            hlat = lat + r_km * math.cos(ang) / 111.0
+            hlng = lng + r_km * math.sin(ang) / (111.0 * max(0.2, math.cos(math.radians(lat))))
             out.append({"locId": "L%d" % (int(_h(round(lat, 2), round(lng, 2), i) * 1e6)), "locName": "Sample " + nm,
                         "countryCode": "US", "subnational1Code": "US-NY", "subnational2Code": county,
-                        "lat": lat + (_h(i, "a") - 0.5) * 0.25, "lng": lng + (_h(i, "b") - 0.5) * 0.3,
+                        "lat": hlat, "lng": hlng,
                         "numSpeciesAllTime": int(80 + _h(lat, i) * 200)})
         return out
     if path.startswith("product/spplist/"):
@@ -83,6 +92,20 @@ def answer(path, query):
         return [{"speciesCode": c, "comName": n, "sciName": s}
                 for c, n, s, p in SPECIES if _h("recent", query.get("lat"), c) < p * 0.6]
     return []
+
+
+def drive(src, dests):
+    """Made-up OSRM table answer: road distance about 1.3x straight-line, at 55 km/h."""
+    import math
+    def km(a, b):
+        r = math.pi / 180
+        h = math.sin((b[0] - a[0]) * r / 2) ** 2 + math.cos(a[0] * r) * math.cos(b[0] * r) * math.sin((b[1] - a[1]) * r / 2) ** 2
+        return 2 * 6371 * math.asin(math.sqrt(h))
+    pts = [src] + list(dests)
+    dist = [km(src, p) * 1300 for p in pts]
+    return {"code": "Ok", "durations": [[d / 1000 / 55 * 3600 for d in dist]], "distances": [dist],
+            "sources": [{"distance": 5.0}],
+            "destinations": [{"distance": 900.0 if _h(p, "snap") < 0.15 else 20.0} for p in pts]}
 
 
 def geocode(endpoint, query):

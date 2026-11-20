@@ -73,11 +73,12 @@
         <button id="btnImport" class="ghost small">Import trip file</button>
         <input id="importFile" type="file" accept=".json,application/json" hidden>
       </div>
-      <p id="lifeStatus" class="life-status"></p>
+      <div id="party" class="party"></div>
     </section>
 
     <div id="filters" class="filters" hidden>
       <label class="toggle"><input type="checkbox" id="fLifers"> Lifers only</label>
+      <select id="fWho" title="Whose lifers count most" hidden></select>
       <label class="toggle starred-toggle"><input type="checkbox" id="fStarred"> ★ Starred only</label>
       <select id="fMin" title="Hide birds below this likelihood">
         <option value="0">Any chance</option>
@@ -115,11 +116,12 @@
   </form>
   <p id="keyMsg" class="msg"></p>
 
-  <h3>2 · Your life list</h3>
-  <p class="fine">On eBird, open <a href="https://ebird.org/lifelist" target="_blank" rel="noopener">ebird.org/lifelist</a>, choose <b>Download (CSV)</b>, then pick that file here. (The full “Download My Data” CSV works too.) Re-import any time to update it.</p>
-  <div class="inline-form">
-    <input id="lifeFile" type="file" accept=".csv,text/csv">
-    <button id="btnClearLife" class="ghost small" type="button">Clear</button>
+  <h3>2 · Life lists</h3>
+  <p class="fine">Add one for each person you bird with. On eBird, open <a href="https://ebird.org/lifelist" target="_blank" rel="noopener">ebird.org/lifelist</a> (signed in as that person), choose <b>Download (CSV)</b>, type their name below, then pick the file. (The full “Download My Data” CSV works too.) Use <b>Update</b> to load a newer file for someone.</p>
+  <ul id="listsList" class="lists-list"></ul>
+  <div class="inline-form add-list">
+    <input id="newListName" placeholder="Name, e.g. Sam" maxlength="40" aria-label="Name for the new life list">
+    <label class="primary small file-btn">Add life list (CSV)…<input id="lifeFile" type="file" accept=".csv,text/csv" hidden></label>
   </div>
   <p id="lifeMsg" class="msg"></p>
 

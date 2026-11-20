@@ -91,13 +91,21 @@ const state = {
   selected: null,
   tab: "trip",
   filters: { lifers: false, starred: false, min: 0, sort: "p", q: "" },
-  life: { loaded: false, sci: new Set(), com: new Set(), count: 0, filename: "", importedAt: "" },
+  lists: [],            // everyone's life lists: {id, name, count, sci:Set, com:Set, filename, importedAt}
   dirty: false,
   mock: false,
 };
 
+/* Display choices that belong to this browser, not to a trip. */
+const PREFS_KEY = "peregrine.prefs";
+const prefs = Object.assign({ hsMode: "each", hsSort: "birds", layer: "Street" },
+  (() => { try { return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}"); } catch (e) { return {}; } })());
+function savePrefs() { try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* storage unavailable */ } }
+
+/* The trip's party is a list of life-list ids (null = everyone who has a list).
+   priority is "all" or one list id: whose lifers count most. */
 function blankTrip() {
-  return { id: null, v: 2, name: "", date: "", window: 7, stops: [], stars: [] };
+  return { id: null, v: 2, name: "", date: "", window: 7, stops: [], stars: [], party: null, priority: "all" };
 }
 /* Dates: stop 1 is on the trip's start date; every later stop is the day after the
    stop before it, unless it has its own date, which then restarts the chain. */
@@ -334,17 +342,63 @@ function findBirds(stops) {
   todo.forEach((s) => { state.results.delete(s.id); loadStop(s); });
 }
 
-// ------------------------------------------------------------------ life list
-function setLifeList(obj) {
-  const sp = (obj && obj.species) || [];
-  state.life = {
-    loaded: sp.length > 0,
+// ------------------------------------------------------------------ life lists and party
+function toList(obj) {
+  const sp = obj.species || [];
+  return {
+    id: obj.id, name: obj.name || "Life list", count: sp.length,
     sci: new Set(sp.map((s) => binom(s.sci)).filter(Boolean)),
     com: new Set(sp.map((s) => normCom(s.com)).filter(Boolean)),
-    count: sp.length,
-    filename: (obj && obj.filename) || "",
-    importedAt: (obj && obj.importedAt) || "",
+    filename: obj.filename || "", importedAt: obj.importedAt || "",
   };
+}
+function setLists(arr) {
+  state.lists = (arr || []).filter((o) => o && o.id).map(toList);
+  liferMemo.clear();
+}
+/** The life lists of the people on this trip. */
+function partyLists() {
+  const p = state.trip.party;
+  return Array.isArray(p) ? state.lists.filter((l) => p.includes(l.id)) : state.lists;
+}
+/** The one person whose lifers count most, or null for "everyone". */
+function priorityList() {
+  const pr = state.trip.priority;
+  return pr && pr !== "all" ? partyLists().find((l) => l.id === pr) || null : null;
+}
+function lifeOn() { return partyLists().length > 0; }
+function lifeKey() {
+  return state.lists.map((l) => l.id + ":" + l.name + ":" + l.count).join(",") + "|" + JSON.stringify(state.trip.party) + "|" + state.trip.priority;
+}
+function lacks(list, sp) { return !(list.sci.has(binom(sp.sci)) || list.com.has(normCom(sp.com))); }
+/** Which people in the party would get this bird as a lifer. */
+const liferMemo = new Map();
+let liferMemoKey = "";
+function liferFor(sp) {
+  const k = lifeKey();
+  if (k !== liferMemoKey) { liferMemo.clear(); liferMemoKey = k; }
+  const key = sp.code + "|" + sp.sci;
+  let who = liferMemo.get(key);
+  if (!who) { who = partyLists().filter((l) => lacks(l, sp)); liferMemo.set(key, who); }
+  return who;
+}
+/** Words for whose lifers the counts mean: "" for one person, " for Sam", " for anyone". */
+function liferWho() {
+  const pl = priorityList();
+  if (pl) return partyLists().length > 1 ? ` for ${esc(pl.name)}` : "";
+  return partyLists().length > 1 ? " for anyone" : "";
+}
+/** "Sam 12 · Alex 30" when more than one person is on the trip. */
+function perPersonHTML(list) {
+  const party = partyLists();
+  if (party.length < 2) return "";
+  return `<p class="per-person">${party.map((l) => `${esc(l.name)} <b>${list.filter((s) => lacks(l, s)).length}</b>`).join(" · ")}</p>`;
+}
+function liferTagHTML(sp) {
+  const who = liferFor(sp);
+  if (!who.length) return "";
+  const multi = partyLists().length > 1;
+  return `<span class="lifer-tag ${isLifer(sp) ? "" : "other"}">${multi ? "Lifer: " + who.map((l) => esc(l.name)).join(", ") : "Lifer"}</span>`;
 }
 function isStarred(sp) { return (state.trip.stars || []).includes(sp.code); }
 function toggleStar(code) {
@@ -355,17 +409,50 @@ function toggleStar(code) {
   markDirty();
   render();
 }
+/** A lifer for the prioritized person, or (for "everyone") for anyone in the party. */
 function isLifer(sp) {
-  if (!state.life.loaded) return false;
-  return !(state.life.sci.has(binom(sp.sci)) || state.life.com.has(normCom(sp.com)));
+  if (!lifeOn()) return false;
+  const pl = priorityList();
+  return pl ? lacks(pl, sp) : liferFor(sp).length > 0;
 }
 
 // ------------------------------------------------------------------ map
 const map = L.map("map", { zoomControl: true, worldCopyJump: true, doubleClickZoom: false }).setView([39.5, -98.35], 4);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors · bird data <a href="https://ebird.org">eBird</a>',
-}).addTo(map);
+/* Map styles: Street (OpenStreetMap), Satellite (Esri World Imagery with place labels),
+   Terrain (OpenTopoMap). The choice is remembered in this browser. */
+const EBIRD_CREDIT = ' · bird data <a href="https://ebird.org">eBird</a>';
+const OSM_CREDIT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
+const baseLayers = {
+  Street: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: OSM_CREDIT + EBIRD_CREDIT,
+  }),
+  Satellite: L.layerGroup([
+    L.tileLayer(ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19, maxNativeZoom: 18,
+      attribution: "Imagery &copy; Esri, Maxar, Earthstar Geographics, and the GIS User Community" + EBIRD_CREDIT,
+    }),
+    L.tileLayer(ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, maxNativeZoom: 18 }),
+  ]),
+  Terrain: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17, subdomains: "abc",
+    attribution: OSM_CREDIT + ', SRTM · style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' + EBIRD_CREDIT,
+  }),
+};
+function useLayerClass(name) {
+  const el = map.getContainer();
+  for (const n of Object.keys(baseLayers)) el.classList.toggle("layer-" + n.toLowerCase(), n === name);
+}
+const firstLayer = baseLayers[prefs.layer] ? prefs.layer : "Street";
+baseLayers[firstLayer].addTo(map);
+useLayerClass(firstLayer);
+L.control.layers(baseLayers, null, { position: "topright" }).addTo(map);
+map.on("baselayerchange", (e) => {
+  prefs.layer = e.name;
+  savePrefs();
+  useLayerClass(e.name);
+  if (e.name === "Terrain" && map.getZoom() > 17) map.setZoom(17);
+});
 const routeLine = L.polyline([], { color: "#3d5a3a", weight: 3, opacity: 0.6, dashArray: "6 6" }).addTo(map);
 const markers = new Map(); // stopId -> marker
 let dragging = false;
@@ -391,7 +478,7 @@ function pinHTML(stop, i) {
   else if (r && r.status === "error") cls += " error";
   else if (r && r.status === "done") {
     const list = filteredForCounts(r.data.species);
-    if (state.life.loaded) {
+    if (lifeOn()) {
       const n = list.filter(isLifer).length;
       if (n) badge = `<span class="badge">${n}</span>`;
     } else badge = `<span class="badge plain">${list.length}</span>`;
@@ -433,7 +520,7 @@ function renderPins() {
     let tip = `<b>${i + 1}. ${esc(stop.name)}</b>`;
     if (r && r.status === "done") {
       const list = filteredForCounts(r.data.species);
-      tip += `<br>${list.length} species` + (state.life.loaded ? ` · ${list.filter(isLifer).length} possible lifers` : "");
+      tip += `<br>${list.length} species` + (lifeOn() ? ` · ${list.filter(isLifer).length} possible lifers${liferWho()}` : "");
     }
     if (m._tip !== tip) {
       m.unbindTooltip().bindTooltip(tip, { direction: "top", offset: [0, -14], className: "pin-tip" });
@@ -472,7 +559,7 @@ async function nameFromMap(stop) {
 }
 
 function addStop(lat, lng, name) {
-  const stop = { id: uid(), name: name || `Stop ${state.trip.stops.length + 1}`, lat, lng, date: "", region: null };
+  const stop = { id: uid(), name: name || `Stop ${state.trip.stops.length + 1}`, lat, lng, date: "", region: null, hotspots: 2, hsRadius: DEFAULT_RADIUS };
   if (name) stop.nameEdited = true;
   state.trip.stops.push(stop);
   markDirty();
@@ -517,7 +604,7 @@ function stopStatusHTML(stop) {
   if (r.status === "error") return { meta: `${btn("Try again")} ${esc(r.error)}`, cls: "err" };
   const list = filteredForCounts(r.data.species);
   const where = r.data.region ? esc(r.data.region.name.split(",")[0]) + " · " : "";
-  const lif = state.life.loaded ? ` · <span class="lifers">${list.filter(isLifer).length} possible lifers</span>` : "";
+  const lif = lifeOn() ? ` · <span class="lifers">${list.filter(isLifer).length} possible lifers${liferWho()}</span>` : "";
   if (r.sig !== stopSig(stop)) return { meta: `${btn("↻ Update")} <span class="stale-note">Changed since the last search</span><br>${where}${list.length} species${lif}`, cls: "" };
   return { meta: `${where}${list.length} species${lif}`, cls: "" };
 }
@@ -649,7 +736,7 @@ function spRow(s, extra = "", titleText = "") {
   const barTitle = titleText || (s.p ? `Reported on ${pct(s.p)} of sampled days` : "Not in the historic sample; seen nearby in the last 30 days");
   return `<li class="sp ${tier} ${lifer ? "lifer" : ""} ${on ? "starred" : ""}">
     <div>
-      <button class="star-btn ${on ? "on" : ""}" data-star="${esc(s.code)}" title="${on ? "Remove from targets" : "Star as a target"}" aria-pressed="${on}">${on ? "★" : "☆"}</button><a href="https://ebird.org/species/${encodeURIComponent(s.code)}" target="_blank" rel="noopener">${esc(s.com)}</a>${lifer ? `<span class="lifer-tag">Lifer</span>` : ""}${s.recent ? `<span class="tag" title="Reported within 25 km in the last 30 days">recent nearby</span>` : ""}
+      <button class="star-btn ${on ? "on" : ""}" data-star="${esc(s.code)}" title="${on ? "Remove from targets" : "Star as a target"}" aria-pressed="${on}">${on ? "★" : "☆"}</button><a href="https://ebird.org/species/${encodeURIComponent(s.code)}" target="_blank" rel="noopener">${esc(s.com)}</a>${liferTagHTML(s)}${s.recent ? `<span class="tag" title="Reported within 25 km in the last 30 days">recent nearby</span>` : ""}
       <div class="sci">${esc(s.sci)}</div>${extra}
     </div>
     <div class="sp-bar" title="${esc(barTitle)}"><div class="bar"><i style="width:${Math.max(2, Math.round(s.p * 100))}%"></i></div><span class="pct">${s.p ? pct(s.p) : "—"}</span></div>
@@ -661,7 +748,10 @@ function tiersHTML(list) {
   return `<div class="tiers"><span class="t1">Likely (50%+): ${t1}</span><span class="t2">Possible (15–50%): ${t2}</span><span class="t3">Long shot: ${list.length - t1 - t2}</span></div>`;
 }
 function lifeNudge() {
-  return state.life.loaded ? "" : `<div class="nudge">Import your eBird life list to see which of these would be lifers. <a data-open-settings>Open Settings</a></div>`;
+  if (lifeOn()) return "";
+  return state.lists.length
+    ? `<div class="nudge">Nobody with a life list is ticked in this trip's birding party, so lifers aren't shown. Pick the party in the Itinerary tab.</div>`
+    : `<div class="nudge">Import your eBird life list to see which of these would be lifers. <a data-open-settings>Open Settings</a></div>`;
 }
 
 function renderStopTab() {
@@ -706,8 +796,8 @@ function renderStopTab() {
   }
   const counted = filteredForCounts(d.species);
   const lifers = counted.filter(isLifer).length;
-  html += state.life.loaded
-    ? `<p class="big"><b>${lifers}</b>possible lifer${lifers === 1 ? "" : "s"} here</p>`
+  html += lifeOn()
+    ? `<p class="big"><b>${lifers}</b>possible lifer${lifers === 1 ? "" : "s"}${liferWho()} here</p>` + perPersonHTML(counted)
     : `<p class="big plain"><b>${counted.length}</b>species possible here</p>`;
   html += `<p class="method">${counted.length} species reported in ${esc(d.region.name.split(",")[0])} on sample days within ±${d.window} of ${niceDate(d.date)}, ${d.years[d.years.length - 1]}–${d.years[0]} (${d.perYear} days spread across the window in each year; ${d.withData} of ${d.totalDays} sample days had checklists${d.missing ? `; ${d.missing} days couldn't be fetched from eBird, so <a data-retry="${stop.id}">try again</a> later to fill them in` : ""})${d.recentUsed ? ", plus sightings within 25 km in the last 30 days" : ""}.</p>`;
   html += tiersHTML(counted) + `</div>` + lifeNudge() + hotspotBoxHTML(stop, d);
@@ -748,7 +838,7 @@ function renderWholeTab() {
   let html = `<div class="sum"><h2>${esc(state.trip.name || "This trip")}</h2>
     <div class="where">${n} stop${n === 1 ? "" : "s"} · ${tripDateRange() ? tripDateRange() + ` · ±${state.trip.window} days` : `no date yet (<a data-ask-date>set it</a>)`}</div>`;
   const starredN = species.filter(isStarred).length;
-  html += `<p class="big plain"><b>${species.length}</b>species possible${state.life.loaded ? ` · <span style="color:var(--gold)"><b style="font-size:inherit">${lifers}</b> lifer${lifers === 1 ? "" : "s"}</span>` : ""}${starredN ? ` · <span class="starred-count">★ ${starredN} starred</span>` : ""}</p>`;
+  html += `<p class="big plain"><b>${species.length}</b>species possible${lifeOn() ? ` · <span style="color:var(--gold)"><b style="font-size:inherit">${lifers}</b> lifer${lifers === 1 ? "" : "s"}${liferWho()}</span>` : ""}${starredN ? ` · <span class="starred-count">★ ${starredN} starred</span>` : ""}</p>` + (lifeOn() ? perPersonHTML(species) : "");
   const unsearched = state.trip.stops.filter(needsSearch).length;
   if (unsearched) html += `<div class="nudge">${unsearched} of ${n} stop${n === 1 ? "" : "s"} ${unsearched === 1 ? "hasn't" : "haven't"} been searched${loaded ? " or changed since" : ""}. <button class="primary small" data-find-all>🔍 Find birds for ${unsearched === 1 ? "it" : "them"}</button></div>`;
   else if (loaded < n) html += `<p class="method">Still loading ${n - loaded} of ${n} stops…</p>`;
@@ -765,12 +855,48 @@ function renderWholeTab() {
   el.innerHTML = html;
 }
 
-function renderLifeStatus() {
-  const L_ = state.life;
-  $("#lifeStatus").innerHTML = L_.loaded
-    ? `Life list: <b>${L_.count}</b> species loaded${L_.importedAt ? ` (imported ${esc(L_.importedAt.replace("T", " "))})` : ""}. <a data-open-settings>Update</a>`
-    : `No life list yet. <a data-open-settings>Import it in Settings</a> to see possible lifers.`;
+/* The birding party (Itinerary tab) and the "lifers for" picker (filter bar). */
+let partyKey = "";
+function renderParty() {
+  const key = lifeKey();
+  if (key === partyKey) return;
+  partyKey = key;
+  const box = $("#party");
+  const party = partyLists();
+  const pl = priorityList();
+  const whoOpts = `<option value="all" ${pl ? "" : "selected"}>Everyone</option>` +
+    party.map((l) => `<option value="${esc(l.id)}" ${pl && pl.id === l.id ? "selected" : ""}>${esc(l.name)}</option>`).join("");
+  if (!state.lists.length) {
+    box.innerHTML = `<p class="life-status">No life lists yet. <a data-open-settings>Import them in Settings</a> to see possible lifers for you and anyone you bird with.</p>`;
+  } else {
+    box.innerHTML = `<h3 class="section-h">Birding party</h3>
+      <div class="party-people">${state.lists.map((l) => `<label class="check"><input type="checkbox" data-party="${esc(l.id)}" ${party.includes(l) ? "checked" : ""}> ${esc(l.name)} <span class="fine">${l.count} species</span></label>`).join("")}</div>
+      ${party.length > 1 ? `<label class="prio">Prioritize <select data-priority>${whoOpts}</select></label>
+      <p class="fine">“Everyone” ranks birds that are lifers for more of the party higher. Picking one person makes their lifers count most; lifers for the others only break ties.</p>` : ""}
+      <p class="life-status"><a data-open-settings>Manage life lists</a></p>`;
+  }
+  const f = $("#fWho");
+  f.innerHTML = whoOpts;
+  f.hidden = party.length < 2;
 }
+function setParty(ids) {
+  // Everyone ticked is stored as "everyone" so new lists join the trip automatically.
+  state.trip.party = ids.length === state.lists.length ? null : ids;
+  if (state.trip.priority !== "all" && !ids.includes(state.trip.priority)) state.trip.priority = "all";
+  hsVersion++;
+  markDirty();
+  render();
+}
+function setPriority(v) {
+  state.trip.priority = v || "all";
+  hsVersion++;
+  markDirty();
+  render();
+}
+document.addEventListener("change", (e) => {
+  if (e.target.matches("[data-party]")) setParty($$("[data-party]").filter((c) => c.checked).map((c) => c.dataset.party));
+  if (e.target.matches("[data-priority], #fWho")) setPriority(e.target.value);
+});
 
 // ------------------------------------------------------------------ render loop
 let rafPending = false;
@@ -784,18 +910,18 @@ function render() {
     renderHotspotLayer();
     updateStopStatuses();
     renderFindAll();
-    const common = JSON.stringify([state.filters, state.life.count, state.trip.name, state.trip.date, state.trip.window, state.trip.stops.map((s) => [s.id, s.name, stopDate(s)]), state.trip.stars, hsVersion]);
+    const common = JSON.stringify([state.filters, lifeKey(), prefs, state.trip.name, state.trip.date, state.trip.window, state.trip.stops.map((s) => [s.id, s.name, stopDate(s)]), state.trip.stars, hsVersion]);
     if (state.tab === "stop") {
       const r = state.results.get(state.selected);
       const selStop = stopById(state.selected);
-      const key = common + "|" + state.selected + "|" + (selStop ? stopSig(selStop) : "") + "|" + (r ? r.status + r.done + r.total + r.sig + (r.note || "") : "none") + "|" + JSON.stringify(stopById(state.selected)?.hotspots) + stopById(state.selected)?.hsRadius;
+      const key = common + "|" + state.selected + "|" + (selStop ? stopSig(selStop) : "") + "|" + (r ? r.status + r.done + r.total + r.sig + (r.note || "") : "none") + "|" + JSON.stringify(selStop?.hotspots) + selStop?.hsRadius + Array.from(hsOpen).join(",");
       if (key !== lastKeys.stop) { lastKeys.stop = key; renderStopTab(); }
     }
     if (state.tab === "whole") {
       const key = common + "|" + state.trip.stops.map((s) => { const r = state.results.get(s.id); return stopSig(s) + (r ? r.status + r.sig : "-"); }).join(",");
       if (key !== lastKeys.whole) { lastKeys.whole = key; renderWholeTab(); }
     }
-    renderLifeStatus();
+    renderParty();
   });
 }
 
@@ -922,6 +1048,14 @@ $("#searchForm").addEventListener("submit", async (e) => {
   }
 });
 
+/* Hotspot search distances. Trips saved with the old 25 km choice become 20 km. */
+const RADII = [1, 5, 10, 20, 50], DEFAULT_RADIUS = 10;
+function radiusOf(v) {
+  v = +v;
+  if (RADII.includes(v)) return v;
+  return v === 25 ? 20 : DEFAULT_RADIUS;
+}
+
 function loadTrip(trip, { clean = true } = {}) {
   const t = blankTrip();
   state.trip = {
@@ -929,6 +1063,8 @@ function loadTrip(trip, { clean = true } = {}) {
     name: trip.name || "",
     v: 2,
     stars: Array.isArray(trip.stars) ? trip.stars.filter((x) => typeof x === "string") : [],
+    party: Array.isArray(trip.party) ? trip.party.filter((x) => typeof x === "string") : null,
+    priority: typeof trip.priority === "string" ? trip.priority : "all",
     date: parseISO(trip.date) ? trip.date : "",
     window: [3, 5, 7, 10, 15].includes(+trip.window) ? +trip.window : 7,
     stops: (trip.stops || []).filter((s) => isFinite(s.lat) && isFinite(s.lng)).map((s) => ({
@@ -936,7 +1072,7 @@ function loadTrip(trip, { clean = true } = {}) {
       date: parseISO(s.date) ? s.date : (!(trip.v >= 2) && parseISO(trip.date) ? trip.date : ""),
       region: s.region || null, regionFor: s.regionFor, nameEdited: !!s.nameEdited,
       hotspots: [1, 2, 3, 4, 5].includes(+s.hotspots) ? +s.hotspots : 2,
-      hsRadius: [10, 25, 50].includes(+s.hsRadius) ? +s.hsRadius : 25,
+      hsRadius: radiusOf(s.hsRadius),
       result: s.result && s.result.sig && s.result.data ? s.result : null,
       hsCache: s.hsCache && s.hsCache.key && Array.isArray(s.hsCache.candidates) ? s.hsCache : null,
     })),
@@ -1065,16 +1201,12 @@ async function openSettings(welcome = false) {
   $("#welcome").hidden = !welcome;
   $("#keyMsg").textContent = "";
   $("#lifeMsg").textContent = "";
+  renderListsManager();
   try {
     const s = await api("/api/settings");
     $("#keyInput").placeholder = s.keyHint ? `Key saved (${s.keyHint}). Paste a new one to replace it.` : "Paste your eBird API key";
   } catch (e) { /* ignore */ }
-  showLifeMsg();
   if (!$("#settingsDlg").open) $("#settingsDlg").showModal();
-}
-function showLifeMsg() {
-  const m = $("#lifeMsg");
-  if (state.life.loaded) { m.className = "msg ok"; m.textContent = `${state.life.count} species loaded from ${state.life.filename || "your file"}.`; }
 }
 $("#btnSettings").addEventListener("click", () => openSettings());
 
@@ -1096,32 +1228,73 @@ $("#keyForm").addEventListener("submit", async (e) => {
   } catch (err) { m.className = "msg bad"; m.textContent = err.message; }
 });
 
-$("#lifeFile").addEventListener("change", async (e) => {
-  const f = e.target.files[0];
+/* Life lists: one per person, each with a name. */
+function renderListsManager() {
+  const ul = $("#listsList");
+  ul.innerHTML = state.lists.length ? state.lists.map((l) => `<li data-list="${esc(l.id)}">
+      <input class="list-name" value="${esc(l.name)}" aria-label="Name for this life list" maxlength="40">
+      <span class="fine">${l.count} species${l.importedAt ? ` · ${esc(l.importedAt.slice(0, 10))}` : ""}</span>
+      <label class="ghost small file-btn" title="Load a newer CSV for this person">Update<input type="file" accept=".csv,text/csv" data-replace="${esc(l.id)}" hidden></label>
+      <button class="ghost small" type="button" data-del-list="${esc(l.id)}">Delete</button></li>`).join("")
+    : `<li class="fine">No life lists yet.</li>`;
+}
+async function reloadLists() {
+  setLists(await api("/api/lifelists"));
+  hsVersion++;
+  renderListsManager();
+  render();
+}
+async function uploadList(file, { id = "", name = "" } = {}) {
   const m = $("#lifeMsg");
-  if (!f) return;
   m.className = "msg"; m.textContent = "Reading…";
   try {
-    const obj = await api("/api/lifelist", { method: "POST", headers: { "Content-Type": "text/csv", "X-Filename": encodeURIComponent(f.name) }, body: await f.text() });
-    setLifeList(obj);
-    showLifeMsg();
-    render();
+    const obj = await api(`/api/lifelists${id ? "?id=" + encodeURIComponent(id) : ""}`, {
+      method: "POST",
+      headers: { "Content-Type": "text/csv", "X-Filename": encodeURIComponent(file.name), "X-List-Name": encodeURIComponent(name) },
+      body: await file.text(),
+    });
+    // A new person joins the open trip's party.
+    if (!id && Array.isArray(state.trip.party)) { state.trip.party.push(obj.id); markDirty(); }
+    await reloadLists();
+    m.className = "msg ok"; m.textContent = `${obj.name}: ${obj.species.length} species loaded from ${obj.filename}.`;
   } catch (err) { m.className = "msg bad"; m.textContent = err.message; }
+}
+$("#lifeFile").addEventListener("change", async (e) => {
+  const f = e.target.files[0];
   e.target.value = "";
+  if (!f) return;
+  await uploadList(f, { name: $("#newListName").value.trim() });
+  $("#newListName").value = "";
 });
-$("#btnClearLife").addEventListener("click", async () => {
-  if (!state.life.loaded || !confirm("Remove your imported life list from the planner?")) return;
-  await api("/api/lifelist", { method: "DELETE" }).catch(() => {});
-  setLifeList(null);
-  $("#lifeMsg").className = "msg"; $("#lifeMsg").textContent = "Life list removed.";
-  render();
+$("#listsList").addEventListener("change", async (e) => {
+  const li = e.target.closest("[data-list]");
+  if (!li) return;
+  if (e.target.matches("[data-replace]")) {
+    const f = e.target.files[0];
+    e.target.value = "";
+    if (f) await uploadList(f, { id: li.dataset.list });
+  } else if (e.target.matches(".list-name")) {
+    try {
+      await api(`/api/lifelists/${encodeURIComponent(li.dataset.list)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: e.target.value }) });
+      await reloadLists();
+    } catch (err) { $("#lifeMsg").className = "msg bad"; $("#lifeMsg").textContent = err.message; }
+  }
+});
+$("#listsList").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-del-list]");
+  if (!del) return;
+  const l = state.lists.find((x) => x.id === del.dataset.delList);
+  if (!l || !confirm(`Remove ${l.name}'s life list from the planner? You can import it again later.`)) return;
+  await api(`/api/lifelists/${encodeURIComponent(l.id)}`, { method: "DELETE" }).catch((err) => toast(err.message));
+  await reloadLists();
+  $("#lifeMsg").className = "msg"; $("#lifeMsg").textContent = `${l.name}'s life list removed.`;
 });
 
 // ------------------------------------------------------------------ import a route
 function addStops(list, replace) {
   if (replace) { state.trip.stops = []; state.results.clear(); }
   const added = list.map((p, i) => {
-    const s = { id: uid(), name: p.name || `Stop ${state.trip.stops.length + i + 1}`, lat: +p.lat, lng: +p.lng, date: p.date || "", region: null, hotspots: 2, hsRadius: 25 };
+    const s = { id: uid(), name: p.name || `Stop ${state.trip.stops.length + i + 1}`, lat: +p.lat, lng: +p.lng, date: p.date || "", region: null, hotspots: 2, hsRadius: DEFAULT_RADIUS };
     if (p.name) s.nameEdited = true;
     return s;
   });
@@ -1199,26 +1372,33 @@ window.addEventListener("beforeunload", () => persistLocal());
 (async function init() {
   let restored = null;
   try { restored = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) { /* ignore */ }
-  try { setLifeList(await api("/api/lifelist")); } catch (e) { /* none */ }
+  try { setLists(await api("/api/lifelists")); } catch (e) { /* none */ }
   let settings = { hasKey: false };
   try { settings = await api("/api/settings"); } catch (e) { toast(e.message); }
   state.mock = !!settings.mock;
   $("#mockBanner").hidden = !state.mock;
   if (restored && restored.trip) loadTrip(restored.trip, { clean: !restored.dirty });
   else loadTrip(blankTrip());
-  renderLifeStatus();
   if (!settings.hasKey) openSettings(true);
 })();
 
 // ------------------------------------------------------------------ best hotspots at a stop
-/* For a stop, look at the nearby eBird hotspots with the most species (up to 10),
-   read each one's all-time species list (1 request each, saved 30 days), then pick
-   the combination of N hotspots that covers the most valuable birds. A bird's value
-   is its likelihood around the date, multiplied by 100 if starred, 1 if a lifer,
-   and almost nothing otherwise, so starred birds come first, then lifers. */
+/* For a stop, look at the eBird hotspots within the chosen distance that have the most
+   species (up to 10), and read each one's all-time species list (1 request each, saved
+   30 days). Two ways to show them:
+   - "Each on its own": every hotspot is ranked by the birds on its own list.
+   - "Best combination": the set of N hotspots that together cover the most, shown in
+     the order that adds the most first (B shows what it adds on top of A).
+   A bird's value is its likelihood around the date, multiplied by 100 if starred, then by
+   how many people in the party it's a lifer for (or, with one person prioritized, mostly
+   whether it's a lifer for them), and almost nothing otherwise. */
 const MAX_CANDIDATES = 10;
+const LETTERS = "ABCDEFGHIJ";
+const hsOpen = new Set();   // "stopId|locId" rows that show their birds
+const hsDays = new Map();   // daysKey -> what each hotspot reported around the dates
+const driveTried = new Set();
 
-function hsKey(stop) { return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${stop.hsRadius || 25}`; }
+function hsKey(stop) { return `${stop.lat.toFixed(4)},${stop.lng.toFixed(4)}|${radiusOf(stop.hsRadius)}`; }
 
 async function runHotspots(stop) {
   const key = hsKey(stop);
@@ -1228,15 +1408,15 @@ async function runHotspots(stop) {
   render();
   const stale = () => hsState.get(stop.id) !== st;
   try {
-    const radius = stop.hsRadius || 25;
+    const radius = radiusOf(stop.hsRadius);
     const hs = await limiter(() => api(`/api/ebird/ref/hotspot/geo?lat=${stop.lat.toFixed(4)}&lng=${stop.lng.toFixed(4)}&dist=${radius}&fmt=json`));
     if (stale()) return;
     const cands = (Array.isArray(hs) ? hs : [])
       .map((h) => ({ locId: h.locId, name: h.locName, lat: h.lat, lng: h.lng, n: h.numSpeciesAllTime || 0, dist: haversineKm(stop, h) }))
-      .filter((h) => h.locId && h.dist <= radius + 1)
+      .filter((h) => h.locId && h.dist <= radius)   // exactly within the distance chosen
       .sort((a, b) => b.n - a.n || a.dist - b.dist)
       .slice(0, MAX_CANDIDATES);
-    if (!cands.length) throw new Error(`No eBird hotspots within ${radius} km of this stop.`);
+    if (!cands.length) throw new Error(`No eBird hotspots within ${radius} km of this stop. Try a bigger distance.`);
     st.total = cands.length;
     await Promise.all(cands.map((c) => limiter(async () => {
       if (stale()) return;
@@ -1259,6 +1439,7 @@ async function runHotspots(stop) {
     st.status = "done";
     stop.hsCache = { key, candidates: st.candidates.map((c) => ({ ...c, codes: Array.from(hsLists.get(c.locId)) })) };
     markDirty();
+    fetchDrive(stop);
   } catch (e) {
     if (stale()) return;
     st.status = "error";
@@ -1268,11 +1449,60 @@ async function runHotspots(stop) {
   render();
 }
 
+/* Driving time from the stop's pin to each hotspot: one request for all of them. */
+async function fetchDrive(stop) {
+  const st = hsState.get(stop.id);
+  if (!st || st.status !== "done" || !st.candidates.length) return;
+  if (st.candidates.every((c) => c.drive !== undefined)) return;
+  const tryKey = stop.id + "|" + st.key;
+  if (driveTried.has(tryKey)) return;
+  driveTried.add(tryKey);
+  st.driveStatus = "loading";
+  hsVersion++;
+  render();
+  try {
+    const to = st.candidates.map((c) => `${(+c.lat).toFixed(5)},${(+c.lng).toFixed(5)}`).join("|");
+    const r = await api(`/api/drive?from=${stop.lat.toFixed(5)},${stop.lng.toFixed(5)}&to=${encodeURIComponent(to)}`);
+    if (hsState.get(stop.id) !== st) return;
+    const offRoad = (m) => m != null && m > 500;
+    st.candidates.forEach((c, i) => {
+      const d = r.dests[i];
+      c.drive = d && d.min != null ? { min: d.min, km: d.km, approx: offRoad(d.snapM) || offRoad(r.srcSnapM) } : null;
+      const saved = stop.hsCache && stop.hsCache.candidates.find((x) => x.locId === c.locId);
+      if (saved) saved.drive = c.drive;
+    });
+    st.driveStatus = "done";
+    markDirty();
+  } catch (e) {
+    st.driveStatus = "error";
+    st.driveError = e.message;
+  }
+  hsVersion++;
+  render();
+}
+function driveMin(h) { return h.drive && h.drive.min != null ? h.drive.min : Infinity; }
+function driveHTML(h) {
+  if (h.drive === undefined) return "";
+  if (!h.drive) return ` · <span class="drive" title="The routing service found no road route">no road route</span>`;
+  const m = Math.round(h.drive.min);
+  const t = m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+  const tip = (h.drive.approx ? "Approximate: the stop or hotspot is away from roads, so this goes to the nearest road point. " : "") +
+    "Driving time by car on OpenStreetMap roads, without traffic.";
+  return ` · <span class="drive" title="${esc(tip)}">🚗 ${h.drive.approx ? "~" : ""}${t} (${h.drive.km} km by road)</span>`;
+}
+
 function birdValue(sp) {
   const base = 0.25 + (sp.p || 0);
   if (isStarred(sp)) return 100 * base;
-  if (!state.life.loaded) return base;
-  return (isLifer(sp) ? 1 : 0.01) * base;
+  if (!lifeOn()) return base;
+  const who = liferFor(sp);
+  const pl = priorityList();
+  if (pl) {
+    const mine = who.includes(pl);
+    const others = who.length - (mine ? 1 : 0);
+    return (mine ? 1 + 0.05 * others : 0.01 + 0.01 * others) * base;
+  }
+  return (who.length || 0.01) * base;
 }
 
 function* combos(n, k, start = 0, acc = []) {
@@ -1280,106 +1510,223 @@ function* combos(n, k, start = 0, acc = []) {
   for (let i = start; i <= n - (k - acc.length); i++) { acc.push(i); yield* combos(n, k, i + 1, acc); acc.pop(); }
 }
 
-/** Best N hotspots for this stop's birds (exhaustive: at most 252 combinations). */
+/** Hotspots for this stop's birds, either each on its own or the best combination of N. */
 function planHotspots(stop, data) {
   const st = hsState.get(stop.id);
   if (!st || st.status !== "done" || st.key !== hsKey(stop)) return null;
   const birds = data.species.filter((s) => s.p > 0 || s.recent);
   const value = new Map(birds.map((b) => [b.code, birdValue(b)]));
-  const cands = st.candidates;
-  const k = Math.min(stop.hotspots || 2, cands.length);
-  let best = null, bestScore = -1;
-  for (const combo of combos(cands.length, k)) {
-    const seen = new Set();
-    let score = 0;
-    for (const ci of combo) for (const code of hsLists.get(cands[ci].locId)) {
-      if (!seen.has(code) && value.has(code)) { seen.add(code); score += value.get(code); }
-    }
-    // tie-break: closer hotspots win
-    score -= combo.reduce((a, ci) => a + cands[ci].dist, 0) * 1e-6;
-    if (score > bestScore) { bestScore = score; best = combo; }
-  }
-  // Present them in the order that adds the most first, with what each adds.
-  const remaining = best.slice();
-  const covered = new Set();
-  const steps = [];
   const byCode = new Map(birds.map((b) => [b.code, b]));
-  while (remaining.length) {
-    let pick = 0, pickGain = -1;
-    remaining.forEach((ci, idx) => {
-      let g = 0;
-      for (const code of hsLists.get(cands[ci].locId)) if (!covered.has(code) && value.has(code)) g += value.get(code);
-      if (g > pickGain) { pickGain = g; pick = idx; }
+  const cands = st.candidates;
+  const listOf = (c) => hsLists.get(c.locId) || new Set();
+  const combined = prefs.hsMode === "combined";
+  const covered = new Set();
+  let steps;
+  if (combined) {
+    const k = Math.min(stop.hotspots || 2, cands.length);
+    let best = null, bestScore = -1;
+    for (const combo of combos(cands.length, k)) {
+      const seen = new Set();
+      let score = 0;
+      for (const ci of combo) for (const code of listOf(cands[ci])) {
+        if (!seen.has(code) && value.has(code)) { seen.add(code); score += value.get(code); }
+      }
+      score -= combo.reduce((a, ci) => a + cands[ci].dist, 0) * 1e-6; // tie-break: closer wins
+      if (score > bestScore) { bestScore = score; best = combo; }
+    }
+    // Present them in the order that adds the most first, with what each adds.
+    const remaining = best.slice();
+    steps = [];
+    while (remaining.length) {
+      let pick = 0, pickGain = -1;
+      remaining.forEach((ci, idx) => {
+        let g = 0;
+        for (const code of listOf(cands[ci])) if (!covered.has(code) && value.has(code)) g += value.get(code);
+        if (g > pickGain) { pickGain = g; pick = idx; }
+      });
+      const ci = remaining.splice(pick, 1)[0];
+      const adds = [];
+      for (const code of listOf(cands[ci])) if (!covered.has(code) && byCode.has(code)) { covered.add(code); adds.push(byCode.get(code)); }
+      adds.sort((a, b) => birdValue(b) - birdValue(a));
+      steps.push({ hotspot: cands[ci], adds });
+    }
+  } else {
+    steps = cands.map((c) => {
+      const adds = [];
+      for (const code of listOf(c)) if (byCode.has(code)) { adds.push(byCode.get(code)); covered.add(code); }
+      adds.sort((a, b) => birdValue(b) - birdValue(a));
+      return { hotspot: c, adds, score: adds.reduce((a, b) => a + value.get(b.code), 0) };
     });
-    const ci = remaining.splice(pick, 1)[0];
-    const adds = [];
-    for (const code of hsLists.get(cands[ci].locId)) if (!covered.has(code) && byCode.has(code)) { covered.add(code); adds.push(byCode.get(code)); }
-    adds.sort((a, b) => birdValue(b) - birdValue(a));
-    steps.push({ hotspot: cands[ci], adds });
+    if (prefs.hsSort === "drive") steps.sort((a, b) => driveMin(a.hotspot) - driveMin(b.hotspot) || a.hotspot.dist - b.hotspot.dist);
+    else steps.sort((a, b) => b.score - a.score || a.hotspot.dist - b.hotspot.dist);
   }
   const starred = birds.filter(isStarred);
   const lifers = birds.filter(isLifer);
   const missedStarred = starred.filter((b) => !covered.has(b.code)).map((b) => ({
-    bird: b, elsewhere: cands.filter((c) => hsLists.get(c.locId).has(b.code)).map((c) => c.name),
+    bird: b, elsewhere: cands.filter((c) => listOf(c).has(b.code)).map((c) => c.name),
   }));
   return {
-    steps, covered,
+    combined, steps, covered,
     starredTotal: starred.length, starredCovered: starred.length - missedStarred.length,
     liferTotal: lifers.length, liferCovered: lifers.filter((b) => covered.has(b.code)).length,
     speciesTotal: birds.length, missedStarred, candidates: cands.length,
   };
 }
 
-const LETTERS = "ABCDE";
 function namesList(list, max = 6) {
   const names = list.slice(0, max).map((b) => (isStarred(b) ? "★ " : "") + esc(b.com));
   return names.join(", ") + (list.length > max ? `, +${list.length - max} more` : "");
 }
 
+/* What one hotspot reported, day by day, around the stop's date in the most recent year
+   whose window has passed (this year if it's already over, otherwise last year). */
+function windowYear(dateStr, n) {
+  const base = parseISO(dateStr), today = parseISO(todayISO());
+  for (let y = today.getFullYear(); ; y--) {
+    if (addDays(new Date(y, base.getMonth(), base.getDate()), n) < today) return y;
+  }
+}
+function daysKey(stop, locId) { return `${locId}|${stopDate(stop)}|${state.trip.window}`; }
+
+async function loadHotspotDays(stop, h) {
+  const date = stopDate(stop);
+  if (!date) return;
+  const key = daysKey(stop, h.locId);
+  const prev = hsDays.get(key);
+  if (prev && (prev.status === "loading" || (prev.status === "done" && !prev.failed))) return;
+  const n = state.trip.window, year = windowYear(date, n), base = parseISO(date);
+  const center = new Date(year, base.getMonth(), base.getDate());
+  const days = [];
+  for (let k = -n; k <= n; k++) days.push(addDays(center, k));
+  const d = { status: "loading", year, from: iso(days[0]), to: iso(days[days.length - 1]), total: days.length, done: 0, withLists: 0, failed: 0, counts: new Map(), error: null };
+  hsDays.set(key, d);
+  hsVersion++;
+  render();
+  let authErr = null;
+  await Promise.all(days.map((day) => limiter(async () => {
+    try {
+      if (authErr) throw authErr;
+      const obs = await api(`/api/ebird/data/obs/${encodeURIComponent(h.locId)}/historic/${day.getFullYear()}/${day.getMonth() + 1}/${day.getDate()}?cat=species&detail=simple`);
+      if (Array.isArray(obs) && obs.length) {
+        d.withLists++;
+        const seen = new Set();
+        for (const o of obs) {
+          if (!o.speciesCode || seen.has(o.speciesCode)) continue;
+          seen.add(o.speciesCode);
+          const c = d.counts.get(o.speciesCode) || { code: o.speciesCode, com: o.comName, sci: o.sciName, n: 0, p: 0 };
+          c.n++;
+          d.counts.set(o.speciesCode, c);
+        }
+      }
+    } catch (e) {
+      d.failed++;
+      if (e.status === 401 || e.status === 400) authErr = authErr || e;
+    } finally {
+      d.done++;
+      hsVersion++;
+      render();
+    }
+  })));
+  for (const c of d.counts.values()) c.p = d.withLists ? c.n / d.withLists : 0;
+  d.status = authErr ? "error" : "done";
+  if (authErr) d.error = authErr.message;
+  hsVersion++;
+  render();
+}
+
+function hsDaysHTML(stop, h) {
+  const d = hsDays.get(daysKey(stop, h.locId));
+  if (!d) { setTimeout(() => loadHotspotDays(stop, h)); return `<div class="hs-days fine">Loading…</div>`; }
+  const range = `${niceDate(d.from)} – ${niceDate(d.to)}, ${d.year}`;
+  if (d.status === "loading") {
+    return `<div class="hs-days fine">Checking ${d.total} days at this hotspot (${range})… ${d.done}/${d.total}<div class="progress"><i style="width:${Math.round((d.done / d.total) * 100)}%"></i></div></div>`;
+  }
+  const retry = `<a data-hs-days-retry="${esc(stop.id)}|${esc(h.locId)}">try again</a>`;
+  if (d.status === "error") return `<div class="hs-days msg bad">${esc(d.error)} ${retry}</div>`;
+  const miss = d.failed ? ` ${d.failed} day${d.failed === 1 ? "" : "s"} couldn't be loaded from eBird (${retry}).` : "";
+  if (!d.withLists) return `<div class="hs-days fine">No checklists at this hotspot between ${range}.${miss}</div>`;
+  const f = state.filters;
+  let list = Array.from(d.counts.values());
+  if (f.lifers) list = list.filter(isLifer);
+  if (f.starred) list = list.filter(isStarred);
+  if (f.q) { const q = f.q.toLowerCase(); list = list.filter((s) => (s.com || "").toLowerCase().includes(q) || (s.sci || "").toLowerCase().includes(q)); }
+  list.sort((a, b) => b.n - a.n || a.com.localeCompare(b.com));
+  const narrowed = f.lifers || f.starred || f.q ? ` (${list.length} match your filters)` : "";
+  return `<div class="hs-days">
+    <p class="fine">${d.counts.size} species reported here on the <b>${d.withLists}</b> of ${d.total} days that had checklists, ${range}${narrowed}. The count is how many of those days each bird was reported.${miss}</p>
+    ${list.length ? `<ul class="hd-list">${list.map((s) => `<li class="${isLifer(s) ? "lifer" : ""} ${isStarred(s) ? "starred" : ""}">
+      <span class="hd-n">${s.n}/${d.withLists}</span><span class="bar"><i style="width:${Math.max(3, Math.round(s.p * 100))}%"></i></span>
+      <span class="hd-name"><button class="star-btn ${isStarred(s) ? "on" : ""}" data-star="${esc(s.code)}" title="Star as a target">${isStarred(s) ? "★" : "☆"}</button>${esc(s.com)}${liferTagHTML(s)}</span></li>`).join("")}</ul>`
+    : `<p class="fine">No birds here match your filters.</p>`}
+  </div>`;
+}
+
 function hotspotBoxHTML(stop, data) {
   const st = hsState.get(stop.id);
   const fresh = st && st.key === hsKey(stop);
+  const radius = radiusOf(stop.hsRadius);
   const opts = (vals, cur, fmt) => vals.map((v) => `<option value="${v}" ${v === cur ? "selected" : ""}>${fmt(v)}</option>`).join("");
+  const combined = prefs.hsMode === "combined";
   let html = `<div class="hs-box">
     <div class="hs-head">
       <b>Best hotspots</b>
-      <span>Visit <select data-hs-count="${stop.id}">${opts([1, 2, 3, 4, 5], stop.hotspots || 2, (v) => v)}</select>
-      within <select data-hs-radius="${stop.id}">${opts([10, 25, 50], stop.hsRadius || 25, (v) => v + " km")}</select></span>
+      <span>within <select data-hs-radius="${stop.id}">${opts(RADII, radius, (v) => v + " km")}</select></span>
       ${fresh && st.status !== "error" ? "" : `<button class="primary small" data-hs-run="${stop.id}">Find best hotspots</button>`}
+    </div>
+    <div class="hs-modes">
+      <span class="seg" role="group" aria-label="How to rank hotspots">
+        <button type="button" data-hs-mode="each" class="${combined ? "" : "on"}" aria-pressed="${!combined}">Each on its own</button><button type="button" data-hs-mode="combined" class="${combined ? "on" : ""}" aria-pressed="${combined}">Best combination</button>
+      </span>
+      ${combined
+        ? `<span>Visit <select data-hs-count="${stop.id}">${opts([1, 2, 3, 4, 5], stop.hotspots || 2, (v) => v)}</select></span>`
+        : `<span>Sort <select data-hs-sort>${opts(["birds", "drive"], prefs.hsSort, (v) => (v === "birds" ? "Best birds" : "Shortest drive"))}</select></span>`}
     </div>`;
   if (!fresh) {
     const nStar = data.species.filter(isStarred).length;
-    html += `<p class="fine">Picks the hotspots that cover the most ${state.life.loaded ? "lifers" : "species"} here${nStar ? `, putting your <b>${nStar} starred</b> bird${nStar === 1 ? "" : "s"} first` : ". Star (☆) the birds you want most and they'll count first"}. Uses about ${MAX_CANDIDATES} eBird requests the first time, saved for 30 days.</p>`;
+    html += `<p class="fine">Ranks the eBird hotspots within ${radius} km by the ${lifeOn() ? `lifers${liferWho()}` : "species"} on their lists${nStar ? `, with your <b>${nStar} starred</b> bird${nStar === 1 ? "" : "s"} first` : ". Star (☆) the birds you want most and they'll count first"}, and shows the driving time to each. Uses about ${MAX_CANDIDATES} eBird requests the first time, saved for 30 days.</p>`;
   } else if (st.status === "loading") {
     html += `<p class="fine">Reading hotspot species lists… ${st.done}/${st.total || "?"}</p>`;
   } else if (st.status === "error") {
     html += `<p class="msg bad">${esc(st.error)}</p>`;
   } else {
     const plan = planHotspots(stop, data);
+    if (st.candidates.some((c) => c.drive === undefined) && st.driveStatus !== "loading") setTimeout(() => fetchDrive(stop));
     const parts = [];
     if (plan.starredTotal) parts.push(`<b>★ ${plan.starredCovered} of ${plan.starredTotal}</b> starred`);
-    if (state.life.loaded) parts.push(`<b>${plan.liferCovered} of ${plan.liferTotal}</b> possible lifers`);
+    if (lifeOn()) parts.push(`<b>${plan.liferCovered} of ${plan.liferTotal}</b> possible lifers${liferWho()}`);
     else parts.push(`<b>${plan.covered.size} of ${plan.speciesTotal}</b> species`);
-    html += `<p class="hs-sum">These ${plan.steps.length} cover ${parts.join(" and ")} at this stop.</p><ol class="hs-list">`;
+    html += combined
+      ? `<p class="hs-sum">These ${plan.steps.length} together cover ${parts.join(" and ")} at this stop.</p>`
+      : `<p class="hs-sum">${plan.steps.length} hotspot${plan.steps.length === 1 ? "" : "s"} within ${radius} km, each judged on its own list, ${prefs.hsSort === "drive" ? "nearest drive first" : "best first"}. Between them they have ${parts.join(" and ")} at this stop.</p>`;
+    if (st.driveStatus === "loading") html += `<p class="fine">Working out driving times…</p>`;
+    if (st.driveStatus === "error") html += `<p class="fine">Driving times aren't available right now (${esc(st.driveError)}). Straight-line distances are shown instead.</p>`;
+    html += `<ol class="hs-list">`;
+    const party = partyLists();
     plan.steps.forEach((step, i) => {
       const h = step.hotspot;
       const starAdds = step.adds.filter(isStarred);
-      const liferAdds = state.life.loaded ? step.adds.filter((b) => isLifer(b) && !isStarred(b)) : [];
+      const liferAdds = lifeOn() ? step.adds.filter((b) => isLifer(b) && !isStarred(b)) : [];
       const other = step.adds.length - starAdds.length - liferAdds.length;
       const bits = [];
       if (starAdds.length) bits.push(`<span class="hs-star">${namesList(starAdds)}</span>`);
-      if (liferAdds.length) bits.push(`${liferAdds.length} lifer${liferAdds.length === 1 ? "" : "s"}: ${namesList(liferAdds)}`);
+      if (liferAdds.length) bits.push(`${liferAdds.length} lifer${liferAdds.length === 1 ? "" : "s"}${liferWho()}: ${namesList(liferAdds)}`);
       if (other > 0) bits.push(`+${other} other species`);
+      const verb = combined ? (i ? "Adds " : "Covers ") : "Has ";
+      const who = party.length > 1 ? `<div class="hs-who">Lifers ${combined && i ? "added " : ""}by person: ${party.map((l) => `${esc(l.name)} <b>${step.adds.filter((b) => lacks(l, b)).length}</b>`).join(" · ")}</div>` : "";
+      const openKey = `${stop.id}|${h.locId}`;
+      const open = hsOpen.has(openKey);
       html += `<li><span class="hs-letter">${LETTERS[i]}</span><div>
         <a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener"><b>${esc(h.name)}</b></a>
-        <span class="fine">${h.dist.toFixed(1)} km · ${h.n} species all-time</span>
-        <div class="hs-adds">${i ? "Adds " : "Covers "}${bits.join(" · ") || "nothing new"}</div></div></li>`;
+        <span class="fine">${h.dist.toFixed(1)} km away${driveHTML(h)} · ${h.n} species all-time</span>
+        <div class="hs-adds">${verb}${bits.join(" · ") || "nothing new"}</div>${who}
+        <button type="button" class="link-btn" data-hs-open="${esc(openKey)}" aria-expanded="${open}">${open ? "▾ Hide" : "▸ Show"} what's been reported here around your dates</button>
+        ${open ? hsDaysHTML(stop, h) : ""}</div></li>`;
     });
     html += `</ol>`;
     if (plan.missedStarred.length) {
-      html += `<p class="hs-miss">Not covered: ${plan.missedStarred.map((m) => `★ ${esc(m.bird.com)}${m.elsewhere.length ? ` (reported at ${esc(m.elsewhere[0])}${m.elsewhere.length > 1 ? ` and ${m.elsewhere.length - 1} more` : ""}; try visiting more hotspots)` : " (not on any of the nearby hotspot lists checked)"}`).join("; ")}.</p>`;
+      html += `<p class="hs-miss">Not covered: ${plan.missedStarred.map((m) => `★ ${esc(m.bird.com)}${m.elsewhere.length ? ` (reported at ${esc(m.elsewhere[0])}${m.elsewhere.length > 1 ? ` and ${m.elsewhere.length - 1} more` : ""}; try visiting more hotspots)` : ` (not on any hotspot list within ${radius} km)`}`).join("; ")}.</p>`;
     }
-    html += `<p class="fine">Chosen from the ${plan.candidates} hotspots with the most species within ${stop.hsRadius || 25} km, using each hotspot's all-time eBird list weighted by how likely each bird is around your date. Starred birds count most, then lifers.</p>`;
+    html += `<p class="fine">From the ${plan.candidates} hotspots with the most species within ${radius} km, using each hotspot's all-time eBird list weighted by how likely each bird is around your date. Starred birds count most, then lifers${party.length > 1 ? (priorityList() ? ` (${esc(priorityList().name)}'s first)` : " (birds that are lifers for more of the party count more)") : ""}.${combined ? "" : " Switch to <b>Best combination</b> to plan several hotspots together."}</p>`;
   }
   return html + `</div>`;
 }
@@ -1391,7 +1738,7 @@ function renderHotspotLayer() {
   const r = stop && state.results.get(stop.id);
   let plan = null;
   if (stop && r && r.status === "done" && state.tab === "stop") plan = planHotspots(stop, r.data);
-  const key = plan ? stop.id + hsVersion + plan.steps.map((s) => s.hotspot.locId).join(",") + JSON.stringify(state.trip.stars) : "";
+  const key = plan ? stop.id + hsVersion + lifeKey() + JSON.stringify(prefs) + plan.steps.map((s) => s.hotspot.locId).join(",") + JSON.stringify(state.trip.stars) : "";
   if (key === hotspotLayerKey) return;
   hotspotLayerKey = key;
   hotspotLayer.clearLayers();
@@ -1402,11 +1749,39 @@ function renderHotspotLayer() {
     const starAdds = step.adds.filter(isStarred).length;
     const lif = step.adds.filter(isLifer).length;
     L.marker([h.lat, h.lng], { icon, zIndexOffset: -100 })
-      .bindTooltip(`<b>${LETTERS[i]}. ${esc(h.name)}</b><br>${starAdds ? `★ ${starAdds} starred · ` : ""}${state.life.loaded ? `${lif} lifers` : `${step.adds.length} species`}`, { direction: "top", offset: [0, -10] })
-      .bindPopup(`<b>${esc(h.name)}</b><br><a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener">Open on eBird ↗</a>`)
+      .bindTooltip(`<b>${LETTERS[i]}. ${esc(h.name)}</b><br>${starAdds ? `★ ${starAdds} starred · ` : ""}${lifeOn() ? `${lif} lifers` : `${step.adds.length} species`}${h.drive ? ` · ${h.drive.approx ? "~" : ""}${Math.round(h.drive.min)} min drive` : ""}`, { direction: "top", offset: [0, -10] })
+      .bindPopup(`<b>${esc(h.name)}</b><br><a href="https://ebird.org/hotspot/${encodeURIComponent(h.locId)}" target="_blank" rel="noopener">Open on eBird ↗</a> · <a href="https://www.google.com/maps/dir/?api=1&origin=${stop.lat.toFixed(5)},${stop.lng.toFixed(5)}&destination=${(+h.lat).toFixed(5)},${(+h.lng).toFixed(5)}" target="_blank" rel="noopener">Directions ↗</a>`)
       .addTo(hotspotLayer);
   });
 }
+
+document.addEventListener("click", (e) => {
+  const mode = e.target.closest("[data-hs-mode]");
+  if (mode) { prefs.hsMode = mode.dataset.hsMode; savePrefs(); hsVersion++; render(); return; }
+  const open = e.target.closest("[data-hs-open]");
+  if (open) {
+    const k = open.dataset.hsOpen;
+    if (hsOpen.has(k)) hsOpen.delete(k);
+    else {
+      hsOpen.add(k);
+      const [sid, loc] = k.split("|");
+      const stop = stopById(sid), h = hsState.get(sid)?.candidates.find((c) => c.locId === loc);
+      if (stop && h) loadHotspotDays(stop, h);
+    }
+    hsVersion++;
+    render();
+    return;
+  }
+  const again = e.target.closest("[data-hs-days-retry]");
+  if (again) {
+    const [sid, loc] = again.dataset.hsDaysRetry.split("|");
+    const stop = stopById(sid), h = hsState.get(sid)?.candidates.find((c) => c.locId === loc);
+    if (stop && h) loadHotspotDays(stop, h);
+  }
+});
+document.addEventListener("change", (e) => {
+  if (e.target.matches("[data-hs-sort]")) { prefs.hsSort = e.target.value; savePrefs(); hsVersion++; render(); }
+});
 
 // ------------------------------------------------------------------ previous / next stop
 function stepStop(dir) {

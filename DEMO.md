@@ -10,7 +10,10 @@
 ## 2 · Click a pin and see the birds there (40 sec)
 - Click the pin with the biggest badge. **Stop** shows *"7 possible lifers here"* plus the county, dates and how many days of checklists it's based on.
 - Tick **★ Lifers only**. The list shrinks to just the targets, most likely first, each with a likelihood bar.
-- Tap ☆ on two or three target birds, then click **Find best hotspots** with 2 hotspots. Lettered markers appear on the map with what each hotspot adds. Switch to 3 hotspots to show it re-plan instantly.
+- Tap ☆ on two or three target birds, then click **Find best hotspots**. Each hotspot is ranked on its own, with its driving time. Click **▸ Show what's been reported here** to see "X of Y days with checklists" for each bird.
+- Switch to **Best combination** with 2 hotspots: B now shows what it adds on top of A. Switch to 3 to show it re-plan instantly.
+- With two life lists loaded, change **Prioritize** from Everyone to one person and watch the counts and the ranking change.
+- Flip the map to **Satellite** with the layers button.
 
 ## 3 · The whole trip at a glance (40 sec)
 - Open the **Trip** tab: *"142 species possible · 11 lifers"*.

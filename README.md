@@ -2,7 +2,7 @@
 
 *A bird trip planner. Peregrine is Latin for "wanderer", and it's the name of a well-traveled falcon.*
 
-Plan a trip as a set of stops on a map and see which birds are likely at each stop around your date. You get a species list for each stop and a combined list for the whole trip, with possible **lifers** flagged from your eBird life list. It runs on your own computer, in your browser.
+Plan a trip as a set of stops on a map and see which birds are likely at each stop around your date. You get a species list for each stop and a combined list for the whole trip, with possible **lifers** flagged from the eBird life lists of everyone in your birding party. It runs on your own computer, in your browser.
 
 ## Open it (one step)
 
@@ -19,7 +19,7 @@ A small black window opens, then Peregrine opens in your browser at `http://loca
 The Settings window opens by itself the first time.
 
 1. **eBird API key.** Get a free key at [ebird.org/api/keygen](https://ebird.org/api/keygen), paste it in and click **Save key**. The planner checks the key with eBird.
-2. **Life list (optional, but it's the fun part).** On [ebird.org/lifelist](https://ebird.org/lifelist), click **Download (CSV)**, then choose that file in Settings. Re-import any time to update it. The full "Download My Data" CSV works too.
+2. **Life lists (optional, but it's the fun part).** On [ebird.org/lifelist](https://ebird.org/lifelist), click **Download (CSV)**. In Settings, type a name (yours, or a friend's) and click **Add life list (CSV)…** to choose the file. Add one for each person you bird with. **Update** loads a newer file for that person, and you can rename or delete lists there too. The full "Download My Data" CSV works too.
 
 ## Using it
 
@@ -35,11 +35,21 @@ The Settings window opens by itself the first time.
 - **Find birds (you decide when):** adding, moving or re-dating stops never contacts eBird on its own. Each stop has a **🔍 Find birds** button, and **Find birds for all stops** is at the top of the list, showing roughly how many eBird requests it will use. If you change a stop's date, the window or its location afterwards, the stop shows **↻ Update** and keeps its old results (marked as out of date) until you click it. Results and hotspot plans are saved with the trip, so reopening a trip needs no new requests.
 - **Dates:** set the **Start date** at the top of the Itinerary tab (if you click Find birds without one, it asks). Stop 1 is on the start date and **each stop after it is the next day** (shown as Day 1, Day 2…). Change any stop's date and the stops after it follow on from it. **↺ auto** puts a stop back to "day after the previous one." Set the same date on two stops to visit both in one day. Reordering stops re-dates them. The window (±3, 5, 7, 10 or 15 days) sets how wide a slice of the calendar is sampled.
 - **Stop tab:** click a pin or a stop to see its birds, most likely first. Use **‹ Prev / Next ›** at the top (or the ← → keys) to step through the stops in order. Use **Lifers only**, **★ Starred only**, the likelihood filter or the search box to narrow the list.
+- **Birding party:** under the stops in the Itinerary tab, tick who's on this trip (saved with the trip). With two or more people, **Prioritize** chooses whose lifers count:
+  - **Everyone:** a bird counts as a lifer if it's new for anyone, and birds that are new for more of the party rank higher.
+  - **One person:** their lifers count most, and lifers for the others only break ties.
+
+  The same choice is in the filter bar (next to **Lifers only**). Bird rows say who each lifer is for, and the stop and trip totals show a count per person.
 - **Star your targets:** tap **☆** next to any bird to star it for this trip (★). Stars are saved with the trip and show in every list.
-- **Best hotspots:** on a stop, choose how many hotspots you'll visit (1–5) and how far you'll go (10, 25 or 50 km), then click **Find best hotspots**.
-  - It picks the combination that covers the most lifers, with starred birds counting far more than the rest, and shows the hotspots as lettered markers (A, B, C…) on the map.
-  - For each hotspot it lists what it adds, and it names any starred bird that isn't covered (and where else it's been reported).
-  - How it works: it looks at the 10 hotspots with the most species within your distance, reads each one's all-time eBird species list, and weights each bird by how likely it is around your date. That's about 10 eBird requests the first time, saved for 30 days. After that, the stop shows its hotspots again automatically, and changing stars or the number of hotspots updates instantly.
+- **Best hotspots:** on a stop, choose how far you'll go (1, 5, 10, 20 or 50 km; 10 km to start), then click **Find best hotspots**. Only hotspots inside that distance (straight line from the pin) are used.
+  - **Each on its own** (the default) ranks every hotspot by the birds on its own list: starred birds first, then lifers. Sort by **Best birds** or **Shortest drive**.
+  - **Best combination** picks the set of hotspots (1–5, your choice) that together cover the most, in the order that adds the most first. B shows what it adds on top of A, and so on. It also names any starred bird the set misses.
+  - With two or more people in the party, each hotspot shows lifers per person.
+  - **Driving time** from the stop's pin to each hotspot comes from [OSRM](https://project-osrm.org/) (OpenStreetMap roads, by car, no traffic). A "~" means the stop or hotspot is away from roads, so the time goes to the nearest road point. If the routing service is down, straight-line distances still show.
+  - **What's been reported here:** click ▸ under a hotspot to see each bird reported there around your dates, as "reported on X of Y days that had checklists". It uses the most recent year whose window has fully passed (this year if your dates are already over, otherwise last year). That's one eBird request per day in the window (15 for ±7 days), saved permanently.
+  - Hotspots appear as lettered markers (A, B, C…) on the map. Click one for eBird and Google Maps directions links.
+  - How it works: it looks at the 10 hotspots with the most species within your distance, reads each one's all-time eBird species list, and weights each bird by how likely it is around your date. That's about 10 eBird requests the first time, saved for 30 days. Trips saved with the old 25 km distance now use 20 km, so click **Find best hotspots** again for those stops.
+- **Map style:** use the layers button at the top right of the map to switch between **Street**, **Satellite** (Esri imagery with place names) and **Terrain** (OpenTopoMap, with contour lines). Your choice is remembered.
 - **Trip tab:** every species across all stops, its best chance, and numbered chips showing which stops have it (gold = best). Click a chip to jump to that stop.
 - **Save:** **Save** (or Ctrl+S) names and saves the trip, and **My trips** reopens or deletes saved trips. **Export trip file** / **Import trip file** make a backup copy or move a trip to another computer.
 
@@ -76,7 +86,7 @@ services:
     ports:
       - "8765:8765"
     volumes:
-      - peregrine-data:/app/data     # trips, life list, eBird key
+      - peregrine-data:/app/data     # trips, life lists, eBird key
       - peregrine-cache:/app/cache   # saved eBird answers
 volumes:
   peregrine-data:
@@ -112,7 +122,7 @@ eBird's terms are for personal use, so don't share the link widely.
 
 Everything stays in this folder on your computer:
 - `data/trips/` holds saved trips (one file each).
-- `data/lifelist.json` is your imported life list.
+- `data/lifelists/` holds the imported life lists (one file per person). An older single `data/lifelist.json` becomes a list named "Me" the first time this version runs.
 - `data/problems.log` records anything eBird refused, which is handy if something goes wrong.
 - `data/settings.json` is your eBird key.
 - `cache/` holds saved eBird answers. It's safe to delete.
