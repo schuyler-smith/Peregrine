@@ -418,14 +418,17 @@ function isLifer(sp) {
 
 // ------------------------------------------------------------------ map
 const map = L.map("map", { zoomControl: true, worldCopyJump: true, doubleClickZoom: false }).setView([39.5, -98.35], 4);
-/* Map styles: Street (OpenStreetMap), Satellite (Esri World Imagery with place labels),
-   Terrain (OpenTopoMap). The choice is remembered in this browser. */
+/* Map styles. Street and Terrain are Esri's, which label places in English as well as the
+   local language (Seoul, not just 서울특별시). Satellite is Esri imagery with English place
+   labels. OpenStreetMap and OpenTopoMap have more trail detail but use local names only.
+   The choice is remembered in this browser. */
 const EBIRD_CREDIT = ' · bird data <a href="https://ebird.org">eBird</a>';
 const OSM_CREDIT = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/";
 const baseLayers = {
-  Street: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: OSM_CREDIT + EBIRD_CREDIT,
+  Street: L.tileLayer(ESRI + "World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, maxNativeZoom: 18,
+    attribution: "Tiles &copy; Esri &mdash; Source: Esri and its data partners, " + OSM_CREDIT + EBIRD_CREDIT,
   }),
   Satellite: L.layerGroup([
     L.tileLayer(ESRI + "World_Imagery/MapServer/tile/{z}/{y}/{x}", {
@@ -434,7 +437,14 @@ const baseLayers = {
     }),
     L.tileLayer(ESRI + "Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, maxNativeZoom: 18 }),
   ]),
-  Terrain: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+  Terrain: L.tileLayer(ESRI + "World_Topo_Map/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, maxNativeZoom: 18,
+    attribution: "Tiles &copy; Esri &mdash; Source: Esri and its data partners, " + OSM_CREDIT + EBIRD_CREDIT,
+  }),
+  OpenStreetMap: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: OSM_CREDIT + EBIRD_CREDIT,
+  }),
+  OpenTopoMap: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
     maxZoom: 17, subdomains: "abc",
     attribution: OSM_CREDIT + ', SRTM · style &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)' + EBIRD_CREDIT,
   }),
@@ -451,7 +461,7 @@ map.on("baselayerchange", (e) => {
   prefs.layer = e.name;
   savePrefs();
   useLayerClass(e.name);
-  if (e.name === "Terrain" && map.getZoom() > 17) map.setZoom(17);
+  if (e.name === "OpenTopoMap" && map.getZoom() > 17) map.setZoom(17);
 });
 const routeLine = L.polyline([], { color: "#3d5a3a", weight: 3, opacity: 0.6, dashArray: "6 6" }).addTo(map);
 const markers = new Map(); // stopId -> marker
