@@ -317,6 +317,7 @@ body.drag-stops, body.drag-stops * { cursor: grabbing !important; user-select: n
 .ck-add-res li[data-ck-add]:hover { background: #f0ebdd; }
 .ck-add-res li b { color: var(--green); }
 .ck-add-res i { color: var(--muted); font-size: 12px; }
+.ck-legend > div + div { margin-top: 3px; }
 .ck-legend { margin: 0; padding: 5px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
 .ck-legend b { display: inline-block; min-width: 18px; text-align: center; border-radius: 4px; padding: 0 3px; }
 .ck-wrap { flex: 1; min-height: 0; overflow: auto; }
